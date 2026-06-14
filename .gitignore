@@ -30,3 +30,8 @@ venv/
 
 #IDE files
 .idea/
+
+.venv/
+venv/
+__pycache__/
+*.pyc
