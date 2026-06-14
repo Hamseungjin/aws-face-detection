@@ -11,7 +11,8 @@ import datetime
 import time
 import json
 import decimal
-from datetime import timedelta
+from zoneinfo import ZoneInfo
+
 
 
 class DecimalEncoder(json.JSONEncoder):
@@ -32,7 +33,7 @@ def load_config():
 def respond(err, res=None):
     return {
         'statusCode': '400' if err else '200',
-        'body': err.message if err else json.dumps(res, cls=DecimalEncoder),
+        'body': str(err) if err else json.dumps(res, cls=DecimalEncoder),
         'headers': {
             'Content-Type': 'application/json',
             'Access-Control-Allow-Origin': "*"
@@ -56,7 +57,7 @@ def fetch_frames(event, context):
 
     #Process "GET" request
     if event['httpMethod'] == "GET":
-        now = datetime.datetime.now()
+        now = datetime.datetime.now(ZoneInfo(config["timezone"]))
         year = now.strftime("%Y")
         mon = now.strftime("%m")
 

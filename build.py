@@ -54,7 +54,7 @@ def clean():
     if os.path.exists('build'):
     	shutil.rmtree('build')
     
-    os.mkdir('build')
+os.mkdir('build')
 
 @task()
 def packagelambda(* functions):
