@@ -136,22 +136,27 @@ def process_image(event, context):
 
             print(notification_txt)
 
-            if label_watch_phone_num:
-                sns_client.publish(PhoneNumber=label_watch_phone_num, Message=notification_txt)
+            #Alert delivery must never block frame persistence (S3/DynamoDB below).
+            try:
+                if label_watch_phone_num:
+                    sns_client.publish(PhoneNumber=label_watch_phone_num, Message=notification_txt)
 
-            if label_watch_sns_topic_arn:
-                resp = sns_client.publish(
-                    TopicArn=label_watch_sns_topic_arn,
-                    Message=json.dumps(
-                        {
-                            "message": notification_txt,
-                            "labels": labels_on_watch_list
-                        }
+                if label_watch_sns_topic_arn:
+                    resp = sns_client.publish(
+                        TopicArn=label_watch_sns_topic_arn,
+                        Message=json.dumps(
+                            {
+                                "message": notification_txt,
+                                "labels": labels_on_watch_list
+                            }
+                        )
                     )
-                )
 
-                if resp.get("MessageId", ""):
-                    print("Successfully published alert message to SNS.")
+                    if resp.get("MessageId", ""):
+                        print("Successfully published alert message to SNS.")
+            except Exception as e:
+                #Log and continue; a failed alert should not drop the frame.
+                print("Alert/SNS publish failed (non-fatal): {}".format(e))
 
         #Store frame image in S3
         s3_key = (s3_key_frames_root + '{}/{}/{}/{}/{}.jpg').format(year, mon, day, hour, frame_id)

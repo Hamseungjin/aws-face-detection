@@ -26,12 +26,7 @@ config/
 #web-ui/bower_components/
 #web-ui/tmp
 lambda/imageprocessor/pytz*
-venv/
+.venv/
 
 #IDE files
 .idea/
-
-.venv/
-venv/
-__pycache__/
-*.pyc

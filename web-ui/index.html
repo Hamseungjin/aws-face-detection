@@ -67,6 +67,46 @@ or in the "license" file accompanying this file. This file is distributed on an 
               </label>
             </div>
         </div>
+
+        <div class="load face-compare">
+            <h2>얼굴 비교</h2>
+            <div>기준 얼굴 이미지 업로드 (JPG/PNG, 최대 4MB)</div>
+            <div>
+              <input type="file" accept="image/jpeg,image/png" v-on:change="handleFileSelect">
+            </div>
+            <div v-if="uploadedImageDataUrl">
+              <img class="face-preview" v-bind:src="uploadedImageDataUrl" alt="Selected face">
+            </div>
+            <div>
+              <label>유사도 임계값(%)
+                <input type="number" min="0" max="100" step="1" v-model.number="similarityThreshold" class="threshold-input">
+              </label>
+            </div>
+            <div>
+              <button class="compare-btn" v-on:click="compareFace" v-bind:disabled="!uploadedImageBase64 || isComparingFace">
+                최근 프레임과 얼굴 비교
+              </button>
+            </div>
+
+            <div v-if="isComparingFace" class="fc-loading">비교 중...</div>
+
+            <div v-if="faceCompareResult" class="fc-result">
+              <div v-if="faceCompareResult.success">
+                <div class="fc-verdict" v-bind:class="faceCompareResult.matched ? 'fc-pass' : 'fc-fail'">
+                  {{ faceCompareResult.matched ? "✔ 일치 (threshold 통과)" : "✘ 불일치 (threshold 미달)" }}
+                </div>
+                <div>유사도: <b>{{ faceCompareResult.similarity }}%</b> (임계값 {{ faceCompareResult.threshold }}%)</div>
+                <div v-if="faceCompareResult.target">최신 프레임 key: <span class="fc-mono">{{ faceCompareResult.target.frame_s3_key }}</span></div>
+                <div v-if="faceCompareResult.target">프레임 시각: {{ frameTime(faceCompareResult.target) }}</div>
+                <div v-if="faceCompareResult.age_seconds != null">프레임 나이: {{ faceCompareResult.age_seconds }}s</div>
+              </div>
+              <div v-else class="fc-fail">
+                비교 실패: {{ reasonText(faceCompareResult.reason) }}
+              </div>
+            </div>
+
+            <div v-if="faceCompareError" class="fc-error">오류: {{ faceCompareError }}</div>
+        </div>
       </div>
     </div>
 </div>

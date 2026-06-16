@@ -39,6 +39,21 @@ Parameters:
     Default: "enrichedframe"
     Description: "Path part for the API Gateway resource to access FrameFetcher lambda function."
 
+  FaceCompareSourceS3KeyParameter:
+    Type: String
+    MinLength: "1"
+    Description: "Enter the name of the S3 key of Face Compare lambda function .zip file."
+
+  FaceCompareLambdaFunctionName:
+    Type: String
+    Default: "facecompare"
+    Description: "Name of the Lambda function that compares an uploaded face with the latest frame."
+
+  FaceCompareApiResourcePathPart:
+    Type: String
+    Default: "face-compare"
+    Description: "Path part for the API Gateway resource to access FaceCompare lambda function."
+
   KinesisStreamNameParameter:
     Type: String
     Default: "FrameStream"
@@ -238,6 +253,72 @@ Resources:
     - FrameS3Bucket
     - EnrichedFrameTable
 
+  FaceCompareLambdaExecutionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+    DependsOn:
+    - FrameS3Bucket
+    - EnrichedFrameTable
+
+  FaceComparePolicy:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyDocument: {
+        "Version": "2012-10-17",
+        "Statement": [{
+                        "Effect": "Allow",
+                        "Action": [
+                          "dynamodb:GetItem",
+                          "dynamodb:Query"
+                        ],
+                        "Resource": [
+                            !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DDBTableNameParameter}",
+                            !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DDBTableNameParameter}/index/${DDBGlobalSecondaryIndexNameParameter}"
+                        ]
+                      },
+                      {
+                        "Effect": "Allow",
+                        "Action": [
+                          "logs:CreateLogStream",
+                          "logs:PutLogEvents"
+                        ],
+                        "Resource": !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*"
+                      },
+                      {
+                        "Effect": "Allow",
+                        "Action": "logs:CreateLogGroup",
+                        "Resource": "*"
+                      },
+                      {
+                        "Effect": "Allow",
+                        "Action": [
+                          "s3:GetObject"
+                        ],
+                        "Resource": !Sub "arn:aws:s3:::${FrameS3BucketNameParameter}/*"
+                      },
+                      {
+                        "Effect": "Allow",
+                        "Action": [
+                          "rekognition:CompareFaces"
+                        ],
+                        "Resource": "*"
+                      }
+        ]
+      }
+      PolicyName: "FaceComparePolicy"
+      Roles:
+        - !Ref FaceCompareLambdaExecutionRole
+
   FrameStream:
     Type: "AWS::Kinesis::Stream"
     Properties: 
@@ -287,6 +368,22 @@ Resources:
       Runtime: python3.12
     DependsOn:
       - FrameFetcherLambdaExecutionRole
+
+  FaceCompareLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: "facecompare"
+      Description: "Function compares an uploaded face image with the latest stored frame using Rekognition CompareFaces."
+      Handler: "facecompare.handler"
+      Role: !GetAtt FaceCompareLambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref SourceS3BucketParameter
+        S3Key: !Ref FaceCompareSourceS3KeyParameter
+      Timeout: 15 #seconds
+      MemorySize: 256 #MB
+      Runtime: python3.12
+    DependsOn:
+      - FaceCompareLambdaExecutionRole
 
   EnrichedFrameTable:
     Type: "AWS::DynamoDB::Table"
@@ -387,6 +484,66 @@ Resources:
             "method.response.header.Access-Control-Allow-Methods": true
             "method.response.header.Access-Control-Allow-Headers": true
 
+  FaceCompareResource:
+    Type: "AWS::ApiGateway::Resource"
+    Properties:
+      RestApiId: !Ref VidAnalyzerRestApi
+      ParentId: !GetAtt VidAnalyzerRestApi.RootResourceId
+      PathPart: !Ref FaceCompareApiResourcePathPart
+
+  FaceCompareResourcePOST:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref VidAnalyzerRestApi
+      ResourceId: !Ref FaceCompareResource
+      ApiKeyRequired: true
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FaceCompareLambda.Arn}/invocations
+      MethodResponses:
+        - ResponseModels:
+            application/json: Empty
+          StatusCode: 200
+          ResponseParameters:
+            "method.response.header.Access-Control-Allow-Origin": true
+            "method.response.header.Access-Control-Allow-Methods": true
+            "method.response.header.Access-Control-Allow-Headers": true
+
+  # Mock integration to allow CORS for the Web UI to invoke /face-compare
+  FaceCompareResourceOPTIONS:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref VidAnalyzerRestApi
+      ResourceId: !Ref FaceCompareResource
+      ApiKeyRequired: false
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        IntegrationHttpMethod: OPTIONS
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestTemplates:
+          "application/json": '{"statusCode": 200 }'
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              "method.response.header.Access-Control-Allow-Origin": "'*'"
+              "method.response.header.Access-Control-Allow-Methods": "'POST,OPTIONS'"
+              "method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+            ResponseTemplates:
+              "application/json": ''
+      MethodResponses:
+        - ResponseModels:
+            application/json: Empty
+          StatusCode: 200
+          ResponseParameters:
+            "method.response.header.Access-Control-Allow-Origin": true
+            "method.response.header.Access-Control-Allow-Methods": true
+            "method.response.header.Access-Control-Allow-Headers": true
+
   VidAnalyzerApiDeployment:
     Type: "AWS::ApiGateway::Deployment"
     Properties:
@@ -395,6 +552,8 @@ Resources:
     DependsOn:
       - EnrichedFrameResourceGET
       - EnrichedFrameResourceOPTIONS
+      - FaceCompareResourcePOST
+      - FaceCompareResourceOPTIONS
   
   DevStage:
     Type: "AWS::ApiGateway::Stage"
@@ -452,6 +611,27 @@ Resources:
       Action: "lambda:InvokeFunction"
       Principal: "apigateway.amazonaws.com"
       SourceArn: !Join [ "", ["arn:aws:execute-api:", !Ref "AWS::Region", ':', !Ref "AWS::AccountId", ':', !Ref VidAnalyzerRestApi, '/*/GET/', !Ref FrameFetcherApiResourcePathPart]]
+    DependsOn:
+      - VidAnalyzerApiDeployment
+
+  #Give API Gateway permission to invoke FaceCompare lambda function.
+  FaceCompareLambdaInvokePermissionSTAR:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      FunctionName: !GetAtt FaceCompareLambda.Arn
+      Action: "lambda:InvokeFunction"
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Join [ "", ["arn:aws:execute-api:", !Ref "AWS::Region", ':', !Ref "AWS::AccountId", ':', !Ref VidAnalyzerRestApi, '/*/*/', !Ref FaceCompareApiResourcePathPart]]
+    DependsOn:
+      - VidAnalyzerApiDeployment
+
+  FaceCompareLambdaInvokePermissionPOST:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      FunctionName: !GetAtt FaceCompareLambda.Arn
+      Action: "lambda:InvokeFunction"
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Join [ "", ["arn:aws:execute-api:", !Ref "AWS::Region", ':', !Ref "AWS::AccountId", ':', !Ref VidAnalyzerRestApi, '/*/POST/', !Ref FaceCompareApiResourcePathPart]]
     DependsOn:
       - VidAnalyzerApiDeployment
 

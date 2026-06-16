@@ -3,6 +3,7 @@
 #     http://aws.amazon.com/asl/
 # or in the "license" file accompanying this file. This file is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, express or implied. See the License for the specific language governing permissions and limitations under the License.
 import os
+import sys
 import shutil
 import zipfile
 import time
@@ -52,9 +53,9 @@ def clean():
     print('Cleaning build directory...')
 
     if os.path.exists('build'):
-    	shutil.rmtree('build')
-    
-os.mkdir('build')
+        shutil.rmtree('build')
+
+    os.mkdir('build')
 
 @task()
 def packagelambda(* functions):
@@ -65,7 +66,7 @@ def packagelambda(* functions):
     os.chdir("build")
 
     if(len(functions) == 0):
-        functions = ("framefetcher", "imageprocessor")
+        functions = ("framefetcher", "imageprocessor", "facecompare")
 
     for function in functions:
         print('Packaging "%s" lambda function in directory' % function)
@@ -87,7 +88,7 @@ def updatelambda(*functions):
     lambda_client = boto3.client('lambda')
 
     if(len(functions) == 0):
-        functions = ("framefetcher", "imageprocessor")
+        functions = ("framefetcher", "imageprocessor", "facecompare")
 
     for function in functions:
         with open('build/%s.zip' % (function), 'rb') as zipf:
@@ -104,7 +105,7 @@ def deploylambda(* functions, **kwargs):
     cfn_params_path = kwargs.get("cfn_params_path", "config/cfn-params.json")
 
     if(len(functions) == 0):
-        functions = ("framefetcher", "imageprocessor")
+        functions = ("framefetcher", "imageprocessor", "facecompare")
 
     region_name = boto3.session.Session().region_name
     s3_keys = {}
@@ -113,6 +114,7 @@ def deploylambda(* functions, **kwargs):
     src_s3_bucket_name = cfn_params_dict["SourceS3BucketParameter"]
     s3_keys["framefetcher"] = cfn_params_dict["FrameFetcherSourceS3KeyParameter"]
     s3_keys["imageprocessor"] = cfn_params_dict["ImageProcessorSourceS3KeyParameter"]
+    s3_keys["facecompare"] = cfn_params_dict["FaceCompareSourceS3KeyParameter"]
 
     s3_client = boto3.client("s3")
     
@@ -381,7 +383,7 @@ def videocaptureip(videouri, capturerate="30", clientdir="client"):
     '''Run the IP camera video capture client using parameters video URI and frame capture rate.'''
     os.chdir(clientdir)
     
-    call(["python", "video_cap_ipcam.py", videouri, capturerate])
+    call([sys.executable, "video_cap_ipcam.py", videouri, capturerate])
 
     os.chdir("..")
 
@@ -392,7 +394,7 @@ def videocapture(capturerate="30",clientdir="client"):
     '''Run the video capture client with built-in camera. Default capture rate is 1 every 30 frames.'''
     os.chdir(clientdir)
     
-    call(["python", "video_cap.py", capturerate])
+    call([sys.executable, "video_cap.py", capturerate])
 
     os.chdir("..")
 
