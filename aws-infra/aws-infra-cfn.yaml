@@ -24,6 +24,11 @@ Parameters:
     MinLength: "1"
     Description: "Enter the name of the S3 key of Frame Fetcher lambda function .zip file."
 
+  FaceVerifierSourceS3KeyParameter:
+    Type: String
+    MinLength: "1"
+    Description: "Enter the name of the S3 key of Face Verifier lambda function .zip file."
+
   FrameFetcherLambdaFunctionName:
     Type: String
     Default: "framefetcher"
@@ -34,10 +39,20 @@ Parameters:
     Default: "imageprocessor"
     Description: "Name of the Lambda function that receives and processes frame images."
 
+  FaceVerifierLambdaFunctionName:
+    Type: String
+    Default: "faceverifier"
+    Description: "Name of the Lambda function that verifies an uploaded ID face against the latest frame."
+
   FrameFetcherApiResourcePathPart:
     Type: String
     Default: "enrichedframe"
     Description: "Path part for the API Gateway resource to access FrameFetcher lambda function."
+
+  FaceVerifierApiResourcePathPart:
+    Type: String
+    Default: "face-verify"
+    Description: "Path part for the API Gateway resource to access FaceVerifier lambda function."
 
   KinesisStreamNameParameter:
     Type: String
@@ -238,6 +253,57 @@ Resources:
     - FrameS3Bucket
     - EnrichedFrameTable
 
+
+  FaceVerifierPolicy:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Action:
+              - "dynamodb:Query"
+            Resource:
+              - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DDBTableNameParameter}"
+              - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DDBTableNameParameter}/index/${DDBGlobalSecondaryIndexNameParameter}"
+          - Effect: "Allow"
+            Action:
+              - "s3:GetObject"
+            Resource: !Sub "arn:aws:s3:::${FrameS3BucketNameParameter}/*"
+          - Effect: "Allow"
+            Action:
+              - "rekognition:DetectFaces"
+              - "rekognition:CompareFaces"
+            Resource: "*"
+          - Effect: "Allow"
+            Action:
+              - "logs:CreateLogStream"
+              - "logs:PutLogEvents"
+            Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*"
+          - Effect: "Allow"
+            Action: "logs:CreateLogGroup"
+            Resource: "*"
+      PolicyName: "FaceVerifierPolicy"
+      Roles:
+        - !Ref FaceVerifierLambdaExecutionRole
+
+  FaceVerifierLambdaExecutionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+    DependsOn:
+    - FrameS3Bucket
+    - EnrichedFrameTable
+
   FrameStream:
     Type: "AWS::Kinesis::Stream"
     Properties: 
@@ -287,6 +353,24 @@ Resources:
       Runtime: python3.12
     DependsOn:
       - FrameFetcherLambdaExecutionRole
+
+
+  FaceVerifierLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Ref FaceVerifierLambdaFunctionName
+      Description: "Function verifies an uploaded ID face against the latest captured frame."
+      Handler: "faceverifier.handler"
+      Role: !GetAtt FaceVerifierLambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref SourceS3BucketParameter
+        S3Key: !Ref FaceVerifierSourceS3KeyParameter
+      Timeout: 20
+      MemorySize: 256
+      Runtime: python3.12
+    DependsOn:
+      - FaceVerifierLambdaExecutionRole
+      - FaceVerifierPolicy
 
   EnrichedFrameTable:
     Type: "AWS::DynamoDB::Table"
@@ -354,6 +438,66 @@ Resources:
             "method.response.header.Access-Control-Allow-Methods": true
             "method.response.header.Access-Control-Allow-Headers": true
 
+
+  FaceVerifyResource:
+    Type: "AWS::ApiGateway::Resource"
+    Properties:
+      RestApiId: !Ref VidAnalyzerRestApi
+      ParentId: !GetAtt VidAnalyzerRestApi.RootResourceId
+      PathPart: !Ref FaceVerifierApiResourcePathPart
+
+  FaceVerifyResourcePOST:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref VidAnalyzerRestApi
+      ResourceId: !Ref FaceVerifyResource
+      ApiKeyRequired: true
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FaceVerifierLambda.Arn}/invocations
+      MethodResponses:
+        - ResponseModels:
+            application/json: Empty
+          StatusCode: 200
+          ResponseParameters:
+            "method.response.header.Access-Control-Allow-Origin": true
+            "method.response.header.Access-Control-Allow-Methods": true
+            "method.response.header.Access-Control-Allow-Headers": true
+
+  FaceVerifyResourceOPTIONS:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref VidAnalyzerRestApi
+      ResourceId: !Ref FaceVerifyResource
+      ApiKeyRequired: false
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        IntegrationHttpMethod: OPTIONS
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestTemplates:
+          "application/json": '{"statusCode": 200 }'
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              "method.response.header.Access-Control-Allow-Origin": "'*'"
+              "method.response.header.Access-Control-Allow-Methods": "'POST,OPTIONS'"
+              "method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+            ResponseTemplates:
+              "application/json": ''
+      MethodResponses:
+        - ResponseModels:
+            application/json: Empty
+          StatusCode: 200
+          ResponseParameters:
+            "method.response.header.Access-Control-Allow-Origin": true
+            "method.response.header.Access-Control-Allow-Methods": true
+            "method.response.header.Access-Control-Allow-Headers": true
+
   # Mock integration to allow Cross-Origin Resource Sharing (CORS) 
   # for Web UI to invoke API Gateway
   EnrichedFrameResourceOPTIONS:
@@ -395,6 +539,8 @@ Resources:
     DependsOn:
       - EnrichedFrameResourceGET
       - EnrichedFrameResourceOPTIONS
+      - FaceVerifyResourcePOST
+      - FaceVerifyResourceOPTIONS
   
   DevStage:
     Type: "AWS::ApiGateway::Stage"
@@ -455,6 +601,16 @@ Resources:
     DependsOn:
       - VidAnalyzerApiDeployment
 
+  FaceVerifierLambdaInvokePermissionPOST:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      FunctionName: !GetAtt FaceVerifierLambda.Arn
+      Action: "lambda:InvokeFunction"
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Join [ "", ["arn:aws:execute-api:", !Ref "AWS::Region", ':', !Ref "AWS::AccountId", ':', !Ref VidAnalyzerRestApi, '/*/POST/', !Ref FaceVerifierApiResourcePathPart]]
+    DependsOn:
+      - VidAnalyzerApiDeployment
+
 
 Outputs:
   #API Gateway endpoint Id
@@ -466,5 +622,9 @@ Outputs:
   VidAnalyzerApiKey:
     Description: "Key for invoking video analyzer API."
     Value: !Ref VidAnalyzerApiKey
+
+  FaceVerifierLambdaArn:
+    Description: "ARN of the Face Verifier Lambda function."
+    Value: !GetAtt FaceVerifierLambda.Arn
 
 

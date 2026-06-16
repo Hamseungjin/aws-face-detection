@@ -180,3 +180,76 @@ input:checked + .slider:before {
 .slider.round:before {
   border-radius: 50%;
 }
+
+.face-verify-panel {
+  background: #2C3446;
+  border: 1px solid #4DC3FA;
+  padding: 12px;
+  margin-bottom: 20px;
+}
+
+.privacy-note {
+  color: #F5D76E;
+  font-size: 0.9em;
+}
+
+.threshold-input {
+  width: 95%;
+  margin: 6px 0 12px 0;
+}
+
+.verify-button {
+  background: #4DC3FA;
+  border: 0;
+  color: #1F2739;
+  cursor: pointer;
+  font-weight: 700;
+  margin: 8px 0;
+  padding: 8px 12px;
+}
+
+.verify-button:disabled {
+  background: #777;
+  cursor: not-allowed;
+}
+
+.preview-wrap {
+  display: inline-block;
+  margin-top: 10px;
+  max-width: 100%;
+  position: relative;
+}
+
+.id-preview {
+  display: block;
+  max-width: 100%;
+  box-shadow: 2px 3px 5px #A7A1AE;
+}
+
+.face-box {
+  border: 3px solid #00FF7F;
+  box-sizing: border-box;
+  position: absolute;
+}
+
+.result-card {
+  margin-top: 12px;
+  padding: 10px;
+}
+
+.success-card {
+  border-left: 5px solid #00FF7F;
+  background: #23382F;
+}
+
+.failure-card {
+  border-left: 5px solid #FF5C5C;
+  background: #3A2830;
+}
+
+.error {
+  color: #FF5C5C;
+  font-weight: 700;
+  margin-top: 8px;
+  word-break: break-word;
+}
