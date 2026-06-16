@@ -65,7 +65,7 @@ def packagelambda(* functions):
     os.chdir("build")
 
     if(len(functions) == 0):
-        functions = ("framefetcher", "imageprocessor")
+        functions = ("framefetcher", "imageprocessor", "faceverifier")
 
     for function in functions:
         print('Packaging "%s" lambda function in directory' % function)
@@ -87,7 +87,7 @@ def updatelambda(*functions):
     lambda_client = boto3.client('lambda')
 
     if(len(functions) == 0):
-        functions = ("framefetcher", "imageprocessor")
+        functions = ("framefetcher", "imageprocessor", "faceverifier")
 
     for function in functions:
         with open('build/%s.zip' % (function), 'rb') as zipf:
@@ -104,7 +104,7 @@ def deploylambda(* functions, **kwargs):
     cfn_params_path = kwargs.get("cfn_params_path", "config/cfn-params.json")
 
     if(len(functions) == 0):
-        functions = ("framefetcher", "imageprocessor")
+        functions = ("framefetcher", "imageprocessor", "faceverifier")
 
     region_name = boto3.session.Session().region_name
     s3_keys = {}
@@ -113,6 +113,7 @@ def deploylambda(* functions, **kwargs):
     src_s3_bucket_name = cfn_params_dict["SourceS3BucketParameter"]
     s3_keys["framefetcher"] = cfn_params_dict["FrameFetcherSourceS3KeyParameter"]
     s3_keys["imageprocessor"] = cfn_params_dict["ImageProcessorSourceS3KeyParameter"]
+    s3_keys["faceverifier"] = cfn_params_dict["FaceVerifierSourceS3KeyParameter"]
 
     s3_client = boto3.client("s3")
     

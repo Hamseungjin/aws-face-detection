@@ -224,3 +224,163 @@ AWS 서버리스 구성 요소를 학습하는 데도 적합합니다.
 ## 한 줄 요약
 
 이 마크다운은 **카메라 영상을 AWS Kinesis, Lambda, Rekognition, S3, DynamoDB, SNS, API Gateway로 연결해 실시간 객체 감지와 알림, Web UI 모니터링을 구현하는 서버리스 영상 분석 프로젝트 가이드**입니다.
+
+## Web UI face verification
+
+This project can now verify an uploaded ID face against the most recent camera frame without changing the existing camera → Kinesis → Image Processor → S3/DynamoDB → Web UI flow.
+
+### What the feature does
+
+1. The Web UI lets an operator select a JPEG or PNG ID image up to 5 MiB.
+2. The browser displays a local preview and sends the image bytes as base64 to `POST /face-verify`.
+3. The Face Verifier Lambda calls Amazon Rekognition `DetectFaces` on the uploaded ID image to confirm whether a face is present and to return the selected face bounding box, confidence, quality, and pose.
+4. The Lambda queries the `EnrichedFrame` DynamoDB table through the `processed_year_month-processed_timestamp-index` GSI for the latest frame from the current or previous month.
+5. If the latest frame is within the configured freshness horizon, the Lambda calls Rekognition `CompareFaces` with the uploaded image as `SourceImage` and the latest S3 frame as `TargetImage`.
+6. The UI displays match status, similarity, threshold, reason, latest frame metadata, and ID-image face analysis. The detected face bounding box is drawn on top of the ID preview.
+
+This feature does **not** perform OCR, Textract extraction, identity-document authenticity checks, or liveness detection.
+
+### Face Verifier configuration
+
+Create a deploy-time config file from the example:
+
+```bash
+cp config/faceverifier-params.example.json config/faceverifier-params.json
+```
+
+Example settings:
+
+```json
+{
+  "region": "ap-northeast-2",
+  "ddb_table": "EnrichedFrame",
+  "ddb_gsi_name": "processed_year_month-processed_timestamp-index",
+  "timezone": "Asia/Seoul",
+  "similarity_threshold": 90.0,
+  "rekognition_api_similarity_threshold": 0.0,
+  "quality_filter": "NONE",
+  "latest_frame_horizon_minutes": 5,
+  "max_source_image_bytes": 5242880,
+  "allowed_source_content_types": ["image/jpeg", "image/png"],
+  "allow_multiple_faces_in_id_image": false
+}
+```
+
+`config/faceverifier-params.json` contains environment-specific deployment values and is intentionally ignored by Git.
+
+### Deploying the Face Verifier Lambda
+
+Add `FaceVerifierSourceS3KeyParameter` to `config/cfn-params.json`, then package and upload the Lambda artifacts:
+
+```bash
+python build.py packagelambda
+python build.py deploylambda
+python build.py updatestack
+```
+
+`packagelambda` includes `config/faceverifier-params.json` in `build/faceverifier.zip`. The example config is only for documentation and should not be deployed as the runtime config.
+
+### Required IAM permissions
+
+The CloudFormation template grants the Face Verifier Lambda:
+
+- `dynamodb:Query` on the `EnrichedFrame` table and its `processed_year_month-processed_timestamp-index` GSI.
+- `s3:GetObject` on the captured frame bucket objects.
+- `rekognition:DetectFaces` and `rekognition:CompareFaces`.
+- CloudWatch Logs permissions for Lambda logging.
+
+### API endpoint
+
+The deployed API adds:
+
+```http
+POST /face-verify
+```
+
+Request:
+
+```json
+{
+  "id_image_base64": "<base64 encoded image bytes>",
+  "id_image_content_type": "image/jpeg",
+  "threshold": 90.0
+}
+```
+
+`threshold` is optional. When omitted, the Lambda uses `similarity_threshold` from `faceverifier-params.json`.
+
+Success response example:
+
+```json
+{
+  "success": true,
+  "matched": true,
+  "similarity": 96.42,
+  "threshold": 90.0,
+  "reason": "SIMILARITY_ABOVE_THRESHOLD",
+  "id_image_analysis": {
+    "detected": true,
+    "face_count": 1,
+    "selected_face": {
+      "bounding_box": {"left": 0.31, "top": 0.18, "width": 0.24, "height": 0.32},
+      "confidence": 99.8,
+      "quality": {"brightness": 82.1, "sharpness": 74.5},
+      "pose": {"roll": 1.2, "yaw": -3.4, "pitch": 2.1}
+    }
+  },
+  "latest_frame": {
+    "frame_id": "f76af0fa-0c32-45a1-bbf5-bb06ca474d2a",
+    "s3_bucket": "video-analyzer-frames",
+    "s3_key": "frames/2026/06/15/10/f76af0fa.jpg",
+    "processed_timestamp": 1781517600.123,
+    "approx_capture_timestamp": 1781517599.812,
+    "age_seconds": 2.14
+  },
+  "error": null
+}
+```
+
+Failure response example:
+
+```json
+{
+  "success": false,
+  "matched": false,
+  "similarity": null,
+  "threshold": 90.0,
+  "reason": "NO_FACE_IN_ID_IMAGE",
+  "id_image_analysis": {"detected": false, "face_count": 0, "selected_face": null},
+  "latest_frame": null,
+  "error": {
+    "service": "rekognition",
+    "code": null,
+    "message": "No face was detected in the uploaded ID image."
+  }
+}
+```
+
+### Web UI endpoint setup
+
+The existing `python build.py webui` task writes `web-ui/src/apigw.js` in the build output with `apiBaseUrl` and `apiKey`. The face verification UI uses the same Axios instance and calls `face-verify` relative to that base URL, so no separate endpoint setting is required after the CloudFormation update.
+
+### Local and deployed testing
+
+Run unit tests with mocked AWS clients:
+
+```bash
+python3 -m pytest -q tests/test_faceverifier.py
+```
+
+After deployment:
+
+1. Start the camera capture client so recent frames are being written to S3 and DynamoDB.
+2. Build and serve the Web UI.
+3. Open the Web UI, select a JPEG or PNG ID image, optionally adjust the threshold, and click **Run face verification**.
+4. Confirm that the ID-image face box, similarity result, reason, and latest-frame metadata are displayed.
+
+### Privacy and biometric-data notes
+
+- Do not upload ID images unless you have authorization and a compliant retention/processing policy.
+- The UI preview is local, but the base64 image bytes are sent to API Gateway and Lambda for Rekognition analysis.
+- The Lambda intentionally does not log raw image bytes, base64 payloads, or full Rekognition responses.
+- AWS credentials must come from the runtime environment or IAM role; do not place credentials in code or config.
