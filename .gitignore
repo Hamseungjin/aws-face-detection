@@ -21,6 +21,10 @@ build/*
 !build/.gitkeep
 build.pyc
 config/
+!config/
+config/*
+!config/facecompare-params.example.json
+!config/faceverifier-params.example.json
 #web-ui/logs/*
 #web-ui/node_modules/
 #web-ui/bower_components/

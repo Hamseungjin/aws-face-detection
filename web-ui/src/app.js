@@ -1,7 +1,5 @@
 // Copyright 2017 Amazon.com, Inc. or its affiliates. All Rights Reserved.
-// Licensed under the Amazon Software License (the "License"). You may not use this file except in compliance with the License. A copy of the License is located at
-//     http://aws.amazon.com/asl/
-// or in the "license" file accompanying this file. This file is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, express or implied. See the License for the specific language governing permissions and limitations under the License.
+// Licensed under the Amazon Software License (the "License").
 
 if(!apiBaseUrl || !apiKey){
     alert("API base URL and/or API key are not set.")
@@ -10,7 +8,7 @@ if(!apiBaseUrl || !apiKey){
 var axiosInstance = axios.create({
   baseURL: apiBaseUrl, //From apigw.js
   headers: {'X-api-key': apiKey}, //From apigw.js
-  timeout: 6000,
+  timeout: 20000,
 });
 
 // Separate instance for face comparison: Rekognition CompareFaces can take
@@ -24,7 +22,22 @@ var faceCompareAxios = axios.create({
 
 var app = new Vue({
   el: '#app',
-  
+  computed: {
+    selectedFaceBoxStyle: function(){
+      var result = this.faceVerify.result;
+      if(!result || !result.id_image_analysis || !result.id_image_analysis.selected_face){
+        return null;
+      }
+      var box = result.id_image_analysis.selected_face.bounding_box;
+      if(!box){ return null; }
+      return {
+        left: (box.left * 100) + '%',
+        top: (box.top * 100) + '%',
+        width: (box.width * 100) + '%',
+        height: (box.height * 100) + '%'
+      };
+    }
+  },
   methods: {
   	fetchFrames: function(){
   		axiosInstance.get('enrichedframe')
@@ -145,6 +158,3 @@ var app = new Vue({
     faceCompareError: null,
   },
 })
-
-
-

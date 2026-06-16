@@ -1,0 +1,16 @@
+{
+  "region": "ap-northeast-2",
+  "ddb_table": "EnrichedFrame",
+  "ddb_gsi_name": "processed_year_month-processed_timestamp-index",
+  "timezone": "Asia/Seoul",
+  "similarity_threshold": 90.0,
+  "rekognition_api_similarity_threshold": 0.0,
+  "quality_filter": "NONE",
+  "latest_frame_horizon_minutes": 5,
+  "max_source_image_bytes": 5242880,
+  "allowed_source_content_types": [
+    "image/jpeg",
+    "image/png"
+  ],
+  "allow_multiple_faces_in_id_image": false
+}

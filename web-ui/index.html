@@ -57,6 +57,45 @@ or in the "license" file accompanying this file. This file is distributed on an 
       </div>
       <div>
         <h2>Settings</h2>
+
+      <div class="face-verify-panel">
+        <h2>Face Verification</h2>
+        <p class="privacy-note">Upload an ID image only when you have permission. The browser preview stays local; verification sends image bytes to the Face Verifier API. OCR, ID authenticity checks, and liveness detection are not performed.</p>
+        <label>ID image (JPEG/PNG, max 5 MiB)</label>
+        <input type="file" accept="image/jpeg,image/png" v-on:change="onIdImageSelected">
+        <label>Business threshold (%)</label>
+        <input class="threshold-input" type="number" min="0" max="100" step="0.1" v-model="faceVerify.threshold">
+        <button class="verify-button" v-on:click="runFaceVerify" v-bind:disabled="!faceVerify.file || faceVerify.loading">{{faceVerify.loading ? 'Verifying...' : 'Run face verification'}}</button>
+        <div class="error" v-if="faceVerify.errorMessage">{{faceVerify.errorMessage}}</div>
+        <div class="preview-wrap" v-if="faceVerify.previewUrl">
+          <img class="id-preview" v-bind:src="faceVerify.previewUrl" alt="Uploaded ID preview">
+          <div v-if="selectedFaceBoxStyle" class="face-box" v-bind:style="selectedFaceBoxStyle"></div>
+        </div>
+        <div v-if="faceVerify.result" class="result-card" v-bind:class="faceVerify.result.matched ? 'success-card' : 'failure-card'">
+          <h3>{{faceVerify.result.matched ? 'Verification succeeded' : 'Verification failed'}}</h3>
+          <p><b>Reason:</b> {{faceVerify.result.reason}}</p>
+          <p><b>Similarity:</b> {{formatNumber(faceVerify.result.similarity)}}%</p>
+          <p><b>Threshold:</b> {{formatNumber(faceVerify.result.threshold)}}%</p>
+          <p v-if="faceVerify.result.error"><b>Error:</b> {{faceVerify.result.error.message}}</p>
+          <div v-if="faceVerify.result.latest_frame">
+            <h4>Latest frame</h4>
+            <p><b>Frame ID:</b> {{faceVerify.result.latest_frame.frame_id}}</p>
+            <p><b>Age:</b> {{formatNumber(faceVerify.result.latest_frame.age_seconds)}} seconds</p>
+            <p><b>S3 key:</b> {{faceVerify.result.latest_frame.s3_key}}</p>
+          </div>
+          <div v-if="faceVerify.result.id_image_analysis">
+            <h4>ID image analysis</h4>
+            <p><b>Detected:</b> {{faceVerify.result.id_image_analysis.detected}}</p>
+            <p><b>Face count:</b> {{faceVerify.result.id_image_analysis.face_count}}</p>
+            <div v-if="faceVerify.result.id_image_analysis.selected_face">
+              <p><b>Confidence:</b> {{formatNumber(faceVerify.result.id_image_analysis.selected_face.confidence)}}%</p>
+              <p><b>Brightness:</b> {{formatNumber(faceVerify.result.id_image_analysis.selected_face.quality.brightness)}} / <b>Sharpness:</b> {{formatNumber(faceVerify.result.id_image_analysis.selected_face.quality.sharpness)}}</p>
+              <p><b>Pose:</b> roll {{formatNumber(faceVerify.result.id_image_analysis.selected_face.pose.roll)}}, yaw {{formatNumber(faceVerify.result.id_image_analysis.selected_face.pose.yaw)}}, pitch {{formatNumber(faceVerify.result.id_image_analysis.selected_face.pose.pitch)}}</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
         <div class="load">
             
             <div>Autoload</div>
