@@ -183,6 +183,12 @@ pynt videocaptureip["http://192.168.0.2/video",60]
 | `pynt videocaptureip` | IP 카메라 MJPEG 스트림에서 프레임 캡처     |
 | `pynt deletedata`     | S3 프레임 이미지와 DynamoDB 메타데이터 삭제 |
 | `pynt deletestack`    | 생성한 AWS 인프라 삭제                |
+| `pynt ec2vpcinfo`     | 기본 VPC와 퍼블릭 서브넷 ID 조회 (EC2 배포용) |
+| `pynt publishapps`    | webui/KPI 앱 artifact를 S3로 업로드 (`[webui]`/`[kpi]` 개별 가능) |
+| `pynt createec2stack` | EC2 스택(webui + KPI + 스케줄러) 생성 |
+| `pynt updateec2stack` | EC2 스택 업데이트 |
+| `pynt ec2ip`          | EC2 인스턴스 현재 public IP 출력 |
+| `pynt deleteec2stack` | EC2 스택만 삭제 (데이터 스택은 유지) |
 
 ## 7. 이 프로젝트로 만들 수 있는 기능
 
@@ -228,6 +234,32 @@ AWS 서버리스 구성 요소를 학습하는 데도 적합합니다.
 * `pynt webuiserver`는 터미널을 계속 점유하므로 실행 중인 터미널을 닫으면 웹 UI 서버도 종료됩니다.
 * `label_watch_phone_num`을 설정하지 않으면 SMS 알림 기능은 활성화되지 않습니다.
 * 이 스택은 개발 및 데모 목적에 가깝기 때문에 운영 환경에서는 보안, 인증, 권한, 비용 제어를 추가로 보완해야 합니다.
+
+## 9. EC2 배포 (webui + KPI Dashboard)
+
+기존 서버리스 파이프라인은 그대로 두고, **웹 UI와 KPI 대시보드를 EC2 2대**로 배포하고 평일 업무시간에만
+자동 start/stop 하는 **별도 스택**(`video-analyzer-ec2-stack`)을 제공합니다.
+
+* EC2 #1: 기존 웹 UI 서빙 (`:8080`), EC2 #2: 운영 KPI 대시보드 (`:8000`, FastAPI).
+* EventBridge Scheduler로 **월~금 09:00/11:00/13:00/15:00 (Asia/Seoul)** 자동 start/stop.
+* **Elastic IP로 접속 주소 고정** — stop/start 후에도 동일한 `http://<EIP>:포트`로 접속.
+* 관리 접속은 **SSM Session Manager**(SSH/키페어 없음), 도메인/HTTPS 없음(데모용).
+
+빠른 시작:
+
+```text
+pynt ec2vpcinfo          # VpcId/SubnetId 확인 후 config/ec2-params.json 채우기
+pynt publishapps         # 앱 artifact를 S3 업로드
+pynt createec2stack      # EC2 + 스케줄러 생성
+pynt ec2ip               # public IP 확인 → 브라우저 접속
+```
+
+자세한 사전 조건 · 배포 · 검증 · 스케줄 동작 · 비용/보안 주의 · 삭제 · 트러블슈팅은
+**[docs/EC2_DEPLOYMENT.md](docs/EC2_DEPLOYMENT.md)** 참고.
+
+> 주의: EC2 스택은 비용이 발생합니다(EC2 컴퓨트는 running 시간, **EBS와 Elastic IP는 stopped 상태에서도 과금**).
+> 고정 IP(EIP 2개)는 접속 편의성을 위한 선택으로 **월 약 +$7**가 추가됩니다.
+> 검증 후 필요 시 수동 stop, 사용 종료 시 `pynt deleteec2stack`(EIP도 함께 release).
 
 ## 한 줄 요약
 

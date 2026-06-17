@@ -1,0 +1,17 @@
+[Unit]
+Description=Rekognition Video Analyzer Web UI (static http.server)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=webui
+EnvironmentFile=/etc/webui.env
+# Regenerate apigw.js from the data stack before each start (self-correcting config).
+ExecStartPre=/opt/webui-genconfig.sh
+ExecStart=/bin/sh -c '/usr/bin/python3 -m http.server "$WEBUI_PORT" --directory /opt/webui'
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

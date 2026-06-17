@@ -6,6 +6,7 @@ import os
 import sys
 import shutil
 import zipfile
+import tarfile
 import time
 from pynt import task
 import boto3
@@ -509,6 +510,186 @@ def deletedata(global_params_path="config/global-params.json", cfn_params_path="
                     }
                 )
     print("Deleted %s batches of items from DynamoDB." % batch_count)
+
+    return
+
+# ---------------------------------------------------------------------------
+# EC2 deployment stack (webui + KPI dashboard).
+#
+# These tasks manage a SEPARATE CloudFormation stack (video-analyzer-ec2-stack)
+# from the data pipeline stack (video-analyzer-stack). createec2stack /
+# updateec2stack reuse the generic createstack / updatestack tasks (both have no
+# dependencies, so calling them directly is safe) by passing the EC2 template and
+# config paths via kwargs. deleteec2stack is a dedicated, minimal delete: it does
+# NOT empty the frames S3 bucket or remove an API Gateway usage plan (that logic
+# is specific to the data stack and must never run here).
+# ---------------------------------------------------------------------------
+
+@task()
+def createec2stack():
+    '''Create the EC2 deployment stack (webui + KPI dashboard). Separate from the data stack.
+
+    NOTE: This stack (PR 1) has no start/stop scheduler yet, so the instances stay
+    running after creation. After verifying, STOP them manually to avoid charges:
+        aws ec2 stop-instances --instance-ids <WebUiInstanceId> <KpiInstanceId>
+    (the exact command is also printed as the 'StopInstancesCommand' stack output).'''
+    createstack(
+        cfn_path="aws-infra/aws-infra-ec2-cfn.yaml",
+        global_params_path="config/ec2-global-params.json",
+        cfn_params_path="config/ec2-params.json",
+    )
+
+@task()
+def updateec2stack():
+    '''Update the EC2 deployment stack.
+
+    Use this e.g. to lock inbound down to your machine: set
+    "AllowedIngressCidrParameter" to "MY_PUBLIC_IP/32" in config/ec2-params.json,
+    then run this task.'''
+    updatestack(
+        cfn_path="aws-infra/aws-infra-ec2-cfn.yaml",
+        global_params_path="config/ec2-global-params.json",
+        cfn_params_path="config/ec2-params.json",
+    )
+
+@task()
+def deleteec2stack(global_params_path="config/ec2-global-params.json"):
+    '''Delete the EC2 deployment stack ONLY.
+
+    Does NOT touch the data pipeline stack, the frames S3 bucket, or any collected
+    data. Safe to run repeatedly.'''
+    stack_name = read_json(global_params_path)["StackName"]
+
+    cfn_client = boto3.client('cloudformation')
+
+    print("Attempting to DELETE '%s' stack using CloudFormation." % stack_name)
+    start_t = time.time()
+    cfn_client.delete_stack(StackName=stack_name)
+
+    print("Waiting until '%s' stack status is DELETE_COMPLETE" % stack_name)
+    cfn_client.get_waiter('stack_delete_complete').wait(StackName=stack_name)
+    print("Stack DELETED in approximately %d secs." % int(time.time() - start_t))
+
+@task()
+def ec2ip(global_params_path="config/ec2-global-params.json"):
+    '''Print current public IPs of the EC2 deployment instances.
+
+    No Elastic IP is used (cost choice), so the public IP CHANGES on every
+    stop/start. Run this after each start to get the current address.'''
+    stack_name = read_json(global_params_path)["StackName"]
+
+    cfn_client = boto3.client('cloudformation')
+    ec2_client = boto3.client('ec2')
+
+    resources = cfn_client.describe_stack_resources(StackName=stack_name)["StackResources"]
+    instance_ids = [r["PhysicalResourceId"] for r in resources
+                    if r["ResourceType"] == "AWS::EC2::Instance"]
+
+    if not instance_ids:
+        print("No EC2 instances found in stack '%s'." % stack_name)
+        return
+
+    for reservation in ec2_client.describe_instances(InstanceIds=instance_ids)["Reservations"]:
+        for inst in reservation["Instances"]:
+            name = next((t["Value"] for t in inst.get("Tags", []) if t["Key"] == "Name"),
+                        inst["InstanceId"])
+            print("%-26s %-20s state=%-10s public_ip=%s" % (
+                name,
+                inst["InstanceId"],
+                inst["State"]["Name"],
+                inst.get("PublicIpAddress", "(none - not running)")))
+
+@task()
+def ec2vpcinfo():
+    '''Print the default VPC id and its subnets to help fill config/ec2-params.json.
+
+    Pick the default VPC id for "VpcIdParameter" and a PUBLIC subnet id for
+    "SubnetIdParameter".'''
+    ec2_client = boto3.client('ec2')
+
+    vpcs = ec2_client.describe_vpcs(
+        Filters=[{"Name": "isDefault", "Values": ["true"]}]
+    )["Vpcs"]
+
+    if not vpcs:
+        print("No default VPC found in this region. Specify any VPC + public subnet manually.")
+        return
+
+    vpc_id = vpcs[0]["VpcId"]
+    print("Default VPC: %s" % vpc_id)
+
+    subnets = ec2_client.describe_subnets(
+        Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]
+    )["Subnets"]
+
+    for s in subnets:
+        visibility = "PUBLIC" if s.get("MapPublicIpOnLaunch") else "private"
+        print("  subnet %-24s az=%-16s %-7s" % (
+            s["SubnetId"], s["AvailabilityZone"], visibility))
+
+    return
+
+@task()
+def publishapps(*apps, **kwargs):
+    '''Package and upload EC2 app artifacts + bootstrap scripts to S3 for instance boot.
+
+    webui: tars the static web-ui/ source and uploads it alongside the bootstrap
+    script, the apigw.js generator, and the systemd unit. (kpi is added in PR 3.)
+    Artifact bucket/prefix are read from config/ec2-params.json.
+
+    DEPLOYMENT ORDER (run publishapps BEFORE the stack so the scripts exist at boot):
+        pynt publishapps webui
+        pynt createec2stack            # or: pynt updateec2stack
+        # then on the instance (via SSM):
+        #   systemctl status webui
+        #   cat /opt/webui/src/apigw.js
+        # then in a browser:  http://<webui-public-ip>:8080
+    '''
+    ec2_params_path = kwargs.get("ec2_params_path", "config/ec2-params.json")
+    ec2_params = read_json(ec2_params_path)
+    bucket = ec2_params["AppArtifactS3BucketParameter"]
+    prefix = ec2_params["AppArtifactS3KeyPrefixParameter"]
+
+    if(len(apps) == 0):
+        apps = ("webui", "kpi")
+
+    if not os.path.exists("build"):
+        os.mkdir("build")
+
+    s3_client = boto3.client("s3")
+
+    for app in apps:
+        if app == "webui":
+            tar_path = "build/web-ui.tgz"
+            print("Packaging web-ui/ -> %s" % tar_path)
+            with tarfile.open(tar_path, "w:gz") as tar:
+                tar.add("web-ui", arcname=".")
+
+            uploads = [
+                (tar_path, "%swebui/web-ui.tgz" % prefix),
+                ("aws-infra/userdata/webui-bootstrap.sh", "%swebui/bootstrap.sh" % prefix),
+                ("aws-infra/userdata/webui-genconfig.sh", "%swebui/webui-genconfig.sh" % prefix),
+                ("aws-infra/userdata/webui.service", "%swebui/webui.service" % prefix),
+            ]
+            for local_path, key in uploads:
+                print("Uploading %s -> s3://%s/%s" % (local_path, bucket, key))
+                s3_client.upload_file(local_path, bucket, key)
+        elif app == "kpi":
+            tar_path = "build/kpi-dashboard.tgz"
+            print("Packaging kpi-dashboard/ -> %s" % tar_path)
+            with tarfile.open(tar_path, "w:gz") as tar:
+                tar.add("kpi-dashboard", arcname=".")
+
+            uploads = [
+                (tar_path, "%skpi/kpi-dashboard.tgz" % prefix),
+                ("kpi-dashboard/deploy/kpi-bootstrap.sh", "%skpi/bootstrap.sh" % prefix),
+                ("kpi-dashboard/deploy/kpi-dashboard.service", "%skpi/kpi-dashboard.service" % prefix),
+            ]
+            for local_path, key in uploads:
+                print("Uploading %s -> s3://%s/%s" % (local_path, bucket, key))
+                s3_client.upload_file(local_path, bucket, key)
+        else:
+            print("Unknown app '%s' (expected 'webui' or 'kpi'). Skipping." % app)
 
     return
 

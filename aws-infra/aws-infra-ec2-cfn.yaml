@@ -1,0 +1,517 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+# EC2 deployment stack for amazon-rekognition-video-analyzer (webui + KPI dashboard).
+#
+# This stack is SEPARATE from the data pipeline stack (video-analyzer-stack) so it can be
+# created and deleted independently without touching Kinesis / Lambda / DynamoDB / S3 / API
+# Gateway. Demo / cost-minimized:
+#   - default VPC public subnet (pass VpcIdParameter / SubnetIdParameter)
+#   - NO NAT gateway, NO VPC endpoints  -> ~$0 networking
+#   - Elastic IPs (x2) for STABLE public IPs across stop/start (convenience over cost)
+#   - admin access via SSM Session Manager (no SSH inbound, no key pair)
+#
+# IMPORTANT OPERATIONAL NOTES
+#   * Elastic IPs: each instance has a STABLE public IP that persists across stop/start
+#     (Outputs WebUiElasticIp / KpiElasticIp; `pynt ec2ip` confirms it). An EIP is billed
+#     even while the instance is STOPPED (~$0.005/h each) -- convenience-over-cost choice.
+#     AssociatePublicIpAddress stays true so first-boot UserData has internet BEFORE the
+#     EIP is associated.
+#   * The EventBridge Scheduler stops/starts the instances on a fixed weekday schedule, but
+#     does NOT stop them immediately on stack create. After verifying, STOP them manually
+#     until the next scheduled window to avoid charges:
+#         aws ec2 stop-instances --instance-ids <WebUiInstanceId> <KpiInstanceId>
+#     (or stop them from the EC2 console).
+#   * Inbound is open to AllowedIngressCidrParameter (default 0.0.0.0/0 for the demo).
+#     To lock it down to only your machine, set AllowedIngressCidrParameter to
+#     MY_PUBLIC_IP/32 in config/ec2-params.json and run `pynt updateec2stack`.
+#   * IAM roles intentionally do NOT set an explicit RoleName, so CloudFormation generates a
+#     unique name. This avoids "role already exists" failures on re-create.
+
+Description: >
+  EC2 deployment stack (webui + KPI dashboard) for amazon-rekognition-video-analyzer.
+  Separate from the data pipeline stack. Demo: default VPC public subnet, no NAT, no VPC
+  endpoints; Elastic IPs for stable public IPs. Admin access via SSM Session Manager.
+
+Parameters:
+
+  VpcIdParameter:
+    Type: AWS::EC2::VPC::Id
+    Description: "Default VPC id (run 'pynt ec2vpcinfo' to find it)."
+
+  SubnetIdParameter:
+    Type: AWS::EC2::Subnet::Id
+    Description: "A PUBLIC subnet id in the chosen VPC (auto-assigns public IP on launch)."
+
+  ImageIdParameter:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
+    Description: "AL2023 x86_64 AMI, resolved from the SSM public parameter (region-portable)."
+
+  InstanceTypeParameter:
+    Type: String
+    Default: "t3.micro"
+    Description: "EC2 instance type."
+
+  AllowedIngressCidrParameter:
+    Type: String
+    Default: "0.0.0.0/0"
+    AllowedPattern: "^([0-9]{1,3}\\.){3}[0-9]{1,3}/([0-9]|[1-2][0-9]|3[0-2])$"
+    Description: >
+      CIDR allowed to reach the web ports. Default 0.0.0.0/0 (open, for the demo).
+      To lock down: set this to MY_PUBLIC_IP/32 in config/ec2-params.json and run
+      'pynt updateec2stack'. SSH is never opened; admin access is via SSM Session Manager.
+
+  WebUiPortParameter:
+    Type: Number
+    Default: 8080
+    Description: "TCP port the webui static server listens on."
+
+  KpiPortParameter:
+    Type: Number
+    Default: 8000
+    Description: "TCP port the KPI dashboard (uvicorn) listens on."
+
+  RootVolumeSizeGbParameter:
+    Type: Number
+    Default: 8
+    Description: "Root EBS gp3 volume size (GiB). Billed 24/7 even while the instance is stopped."
+
+  AppArtifactS3BucketParameter:
+    Type: String
+    MinLength: "1"
+    Description: "S3 bucket holding app artifacts / bootstrap scripts (reuse the code bucket)."
+
+  AppArtifactS3KeyPrefixParameter:
+    Type: String
+    Default: "apps/"
+    Description: "Key prefix under which webui/ and kpi/ artifacts live. Must end with '/'."
+
+  DataStackNameParameter:
+    Type: String
+    Default: "video-analyzer-stack"
+    Description: "Name of the existing data pipeline stack (read at runtime by the instances)."
+
+  DataApiStageNameParameter:
+    Type: String
+    Default: "development"
+    Description: "API Gateway stage of the data stack; used to build the apigw.js base URL."
+
+  DataDdbTableNameParameter:
+    Type: String
+    Default: "EnrichedFrame"
+    Description: "DynamoDB table of the data stack (for the KPI role's Query/DescribeTable scope)."
+
+  DataDdbGsiNameParameter:
+    Type: String
+    Default: "processed_year_month-processed_timestamp-index"
+    Description: "DynamoDB GSI name (for the KPI role's index ARN scope)."
+
+Resources:
+
+  WebUiSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "webui inbound (web port only); SSM Session Manager needs no inbound."
+      VpcId: !Ref VpcIdParameter
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !Ref WebUiPortParameter
+          ToPort: !Ref WebUiPortParameter
+          CidrIp: !Ref AllowedIngressCidrParameter
+          Description: "webui HTTP"
+      Tags:
+        - { Key: Name, Value: video-analyzer-webui-sg }
+
+  KpiSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "KPI dashboard inbound (web port only); SSM Session Manager needs no inbound."
+      VpcId: !Ref VpcIdParameter
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !Ref KpiPortParameter
+          ToPort: !Ref KpiPortParameter
+          CidrIp: !Ref AllowedIngressCidrParameter
+          Description: "KPI dashboard HTTP"
+      Tags:
+        - { Key: Name, Value: video-analyzer-kpi-sg }
+
+  # RoleName intentionally omitted -> CloudFormation generates a unique name.
+  WebUiInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ec2.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: webui-artifact-read
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub "arn:aws:s3:::${AppArtifactS3BucketParameter}/${AppArtifactS3KeyPrefixParameter}webui/*"
+        - PolicyName: webui-config-read
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Discover the REST API id + API key id from the data pipeline stack.
+              - Effect: Allow
+                Action: cloudformation:DescribeStackResource
+                Resource: !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${DataStackNameParameter}/*"
+              # Read the API key value (get-api-key --include-value) to write into apigw.js.
+              - Effect: Allow
+                Action: apigateway:GET
+                Resource: !Sub "arn:aws:apigateway:${AWS::Region}::/apikeys/*"
+      Tags:
+        - { Key: Name, Value: video-analyzer-webui-role }
+
+  WebUiInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [ !Ref WebUiInstanceRole ]
+
+  # RoleName intentionally omitted -> CloudFormation generates a unique name.
+  KpiInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ec2.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: kpi-artifact-read
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub "arn:aws:s3:::${AppArtifactS3BucketParameter}/${AppArtifactS3KeyPrefixParameter}kpi/*"
+        - PolicyName: kpi-data-read
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Logs Insights StartQuery scoped to the 3 Lambda log groups.
+              - Effect: Allow
+                Action: logs:StartQuery
+                Resource:
+                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/imageprocessor:*"
+                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/framefetcher:*"
+                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/facecompare:*"
+              # GetQueryResults / StopQuery are keyed by queryId, not a log group,
+              # so they cannot be resource-scoped -> "*", limited to these 2 actions.
+              - Effect: Allow
+                Action:
+                  - logs:GetQueryResults
+                  - logs:StopQuery
+                Resource: "*"
+              # cloudwatch:GetMetricData has NO resource-level permissions in IAM,
+              # so it must be Resource "*" (read-only metric data).
+              - Effect: Allow
+                Action: cloudwatch:GetMetricData
+                Resource: "*"
+              # DynamoDB read-only on the EnrichedFrame table + its GSI only.
+              - Effect: Allow
+                Action:
+                  - dynamodb:Query
+                  - dynamodb:DescribeTable
+                Resource:
+                  - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DataDdbTableNameParameter}"
+                  - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DataDdbTableNameParameter}/index/${DataDdbGsiNameParameter}"
+      Tags:
+        - { Key: Name, Value: video-analyzer-kpi-role }
+
+  KpiInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [ !Ref KpiInstanceRole ]
+
+  WebUiInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref ImageIdParameter
+      InstanceType: !Ref InstanceTypeParameter
+      IamInstanceProfile: !Ref WebUiInstanceProfile
+      NetworkInterfaces:
+        # AssociatePublicIpAddress stays true so first-boot UserData has internet
+        # (S3 bootstrap download) BEFORE the Elastic IP is associated; the EIP then
+        # replaces this auto-assigned IP. Cleaner ENI/EIP ordering = P1 option.
+        - DeviceIndex: 0
+          AssociatePublicIpAddress: true
+          SubnetId: !Ref SubnetIdParameter
+          GroupSet: [ !Ref WebUiSecurityGroup ]
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: !Ref RootVolumeSizeGbParameter
+            VolumeType: gp3
+            DeleteOnTermination: true
+            Encrypted: true
+      # Thin-loader UserData: fetch and run the role's bootstrap.sh from S3 if present.
+      # PR 1 has no bootstrap scripts yet, so this just logs and leaves an SSM-only instance.
+      # PR 2 (webui) / PR 3 (kpi) publish bootstrap.sh to S3 -> no CFN change / no instance replacement.
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -x
+          exec > /var/log/userdata.log 2>&1
+          echo "webui userdata start"
+          # Ensure the aws CLI is available (AL2023 ships it, but be defensive).
+          if ! command -v aws >/dev/null 2>&1; then
+            echo "aws CLI not found; attempting install via dnf..."
+            dnf install -y awscli-2 || dnf install -y awscli || true
+          fi
+          if ! command -v aws >/dev/null 2>&1; then
+            echo "aws CLI still missing; trying the official installer..."
+            curl -sSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/awscliv2.zip
+            command -v unzip >/dev/null 2>&1 || dnf install -y unzip
+            unzip -q /tmp/awscliv2.zip -d /tmp && /tmp/aws/install
+          fi
+          if ! command -v aws >/dev/null 2>&1; then
+            echo "ERROR: aws CLI is required but could not be installed. Aborting webui setup." >&2
+            exit 1
+          fi
+          mkdir -p /opt/app
+          if aws s3 cp "s3://${AppArtifactS3BucketParameter}/${AppArtifactS3KeyPrefixParameter}webui/bootstrap.sh" /opt/app/bootstrap.sh; then
+            chmod +x /opt/app/bootstrap.sh
+            WEBUI_PORT="${WebUiPortParameter}" DATA_STACK="${DataStackNameParameter}" DATA_API_STAGE="${DataApiStageNameParameter}" ARTIFACT_BUCKET="${AppArtifactS3BucketParameter}" ARTIFACT_PREFIX="${AppArtifactS3KeyPrefixParameter}" /opt/app/bootstrap.sh
+          else
+            echo "No webui bootstrap.sh yet (publish it with 'pynt publishapps webui'). SSM-only for now."
+          fi
+      Tags:
+        - { Key: Name, Value: video-analyzer-webui }
+
+  KpiInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref ImageIdParameter
+      InstanceType: !Ref InstanceTypeParameter
+      IamInstanceProfile: !Ref KpiInstanceProfile
+      NetworkInterfaces:
+        # AssociatePublicIpAddress stays true so first-boot UserData has internet
+        # (S3 bootstrap download) BEFORE the Elastic IP is associated; the EIP then
+        # replaces this auto-assigned IP. Cleaner ENI/EIP ordering = P1 option.
+        - DeviceIndex: 0
+          AssociatePublicIpAddress: true
+          SubnetId: !Ref SubnetIdParameter
+          GroupSet: [ !Ref KpiSecurityGroup ]
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: !Ref RootVolumeSizeGbParameter
+            VolumeType: gp3
+            DeleteOnTermination: true
+            Encrypted: true
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -x
+          exec > /var/log/userdata.log 2>&1
+          echo "kpi userdata start"
+          # Ensure the aws CLI is available (AL2023 ships it, but be defensive).
+          if ! command -v aws >/dev/null 2>&1; then
+            echo "aws CLI not found; attempting install via dnf..."
+            dnf install -y awscli-2 || dnf install -y awscli || true
+          fi
+          if ! command -v aws >/dev/null 2>&1; then
+            echo "aws CLI still missing; trying the official installer..."
+            curl -sSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/awscliv2.zip
+            command -v unzip >/dev/null 2>&1 || dnf install -y unzip
+            unzip -q /tmp/awscliv2.zip -d /tmp && /tmp/aws/install
+          fi
+          if ! command -v aws >/dev/null 2>&1; then
+            echo "ERROR: aws CLI is required but could not be installed. Aborting kpi setup." >&2
+            exit 1
+          fi
+          mkdir -p /opt/app
+          if aws s3 cp "s3://${AppArtifactS3BucketParameter}/${AppArtifactS3KeyPrefixParameter}kpi/bootstrap.sh" /opt/app/bootstrap.sh; then
+            chmod +x /opt/app/bootstrap.sh
+            KPI_PORT="${KpiPortParameter}" DATA_STACK="${DataStackNameParameter}" ARTIFACT_BUCKET="${AppArtifactS3BucketParameter}" ARTIFACT_PREFIX="${AppArtifactS3KeyPrefixParameter}" /opt/app/bootstrap.sh
+          else
+            echo "No kpi bootstrap.sh yet (added in PR 3). SSM-only for now."
+          fi
+      Tags:
+        - { Key: Name, Value: video-analyzer-kpi }
+
+  # ---------------------------------------------------------------------------
+  # Elastic IPs: give each instance a STABLE public IP that survives stop/start,
+  # so the webui / KPI URLs do not change after the scheduler stops & starts them.
+  # Instances keep AssociatePublicIpAddress: true so first-boot UserData has
+  # internet (S3 bootstrap) before the EIP is associated; the EIP then replaces
+  # the auto-assigned IP (no no-internet race).
+  # COST: an allocated public IPv4 / EIP is billed whether the instance is running
+  # OR stopped (~$0.005/h each). This is a CONVENIENCE-over-cost choice; see
+  # docs/EC2_DEPLOYMENT.md. No DeletionPolicy Retain -> the EIPs are RELEASED when
+  # the stack is deleted (avoids orphan public-IPv4 charges).
+  # ---------------------------------------------------------------------------
+  WebUiElasticIp:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - { Key: Name, Value: video-analyzer-webui-eip }
+
+  WebUiElasticIpAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !GetAtt WebUiElasticIp.AllocationId
+      InstanceId: !Ref WebUiInstance
+
+  KpiElasticIp:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - { Key: Name, Value: video-analyzer-kpi-eip }
+
+  KpiElasticIpAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !GetAtt KpiElasticIp.AllocationId
+      InstanceId: !Ref KpiInstance
+
+  # ---------------------------------------------------------------------------
+  # EC2 auto start/stop scheduler (EventBridge Scheduler; no Lambda).
+  #
+  # PURPOSE: cut COMPUTE cost by running both instances only during weekday demo
+  # windows. EBS root volumes still bill 24/7 while stopped -- the scheduler
+  # reduces *running* hours, not EBS.
+  #
+  # Asia/Seoul, Mon-Fri:  09:00 start, 11:00 stop, 13:00 start, 15:00 stop.
+  # Stop schedules fire UNCONDITIONALLY, so a manually-started instance is still
+  # stopped at the next 11:00 / 15:00. Nothing starts them outside the windows.
+  # ---------------------------------------------------------------------------
+
+  # RoleName omitted -> CloudFormation generates a unique name (avoids collisions).
+  SchedulerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: scheduler.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                # Confused-deputy guard: only this account's schedules in the
+                # default schedule-group may assume this role.
+                aws:SourceAccount: !Ref "AWS::AccountId"
+                aws:SourceArn: !Sub "arn:aws:scheduler:${AWS::Region}:${AWS::AccountId}:schedule-group/default"
+      Policies:
+        - PolicyName: ec2-start-stop
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:StartInstances
+                  - ec2:StopInstances
+                Resource:
+                  - !Sub "arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:instance/${WebUiInstance}"
+                  - !Sub "arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:instance/${KpiInstance}"
+      Tags:
+        - { Key: Name, Value: video-analyzer-scheduler-role }
+
+  ScheduleStartMorning:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: video-analyzer-ec2-start-0900
+      Description: "Start webui + KPI EC2 (Mon-Fri 09:00 Asia/Seoul)"
+      FlexibleTimeWindow: { Mode: "OFF" }
+      ScheduleExpression: "cron(0 9 ? * MON-FRI *)"
+      ScheduleExpressionTimezone: "Asia/Seoul"
+      State: ENABLED
+      Target:
+        Arn: "arn:aws:scheduler:::aws-sdk:ec2:startInstances"
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: !Sub '{"InstanceIds":["${WebUiInstance}","${KpiInstance}"]}'
+
+  ScheduleStopMorning:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: video-analyzer-ec2-stop-1100
+      Description: "Stop webui + KPI EC2 (Mon-Fri 11:00 Asia/Seoul)"
+      FlexibleTimeWindow: { Mode: "OFF" }
+      ScheduleExpression: "cron(0 11 ? * MON-FRI *)"
+      ScheduleExpressionTimezone: "Asia/Seoul"
+      State: ENABLED
+      Target:
+        Arn: "arn:aws:scheduler:::aws-sdk:ec2:stopInstances"
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: !Sub '{"InstanceIds":["${WebUiInstance}","${KpiInstance}"]}'
+
+  ScheduleStartAfternoon:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: video-analyzer-ec2-start-1300
+      Description: "Start webui + KPI EC2 (Mon-Fri 13:00 Asia/Seoul)"
+      FlexibleTimeWindow: { Mode: "OFF" }
+      ScheduleExpression: "cron(0 13 ? * MON-FRI *)"
+      ScheduleExpressionTimezone: "Asia/Seoul"
+      State: ENABLED
+      Target:
+        Arn: "arn:aws:scheduler:::aws-sdk:ec2:startInstances"
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: !Sub '{"InstanceIds":["${WebUiInstance}","${KpiInstance}"]}'
+
+  ScheduleStopAfternoon:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: video-analyzer-ec2-stop-1500
+      Description: "Stop webui + KPI EC2 (Mon-Fri 15:00 Asia/Seoul)"
+      FlexibleTimeWindow: { Mode: "OFF" }
+      ScheduleExpression: "cron(0 15 ? * MON-FRI *)"
+      ScheduleExpressionTimezone: "Asia/Seoul"
+      State: ENABLED
+      Target:
+        Arn: "arn:aws:scheduler:::aws-sdk:ec2:stopInstances"
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: !Sub '{"InstanceIds":["${WebUiInstance}","${KpiInstance}"]}'
+
+Outputs:
+
+  WebUiInstanceId:
+    Description: "webui EC2 instance id."
+    Value: !Ref WebUiInstance
+
+  KpiInstanceId:
+    Description: "KPI dashboard EC2 instance id."
+    Value: !Ref KpiInstance
+
+  StopInstancesCommand:
+    Description: "PR 1 has no scheduler yet. Run this after verifying to avoid charges."
+    Value: !Sub "aws ec2 stop-instances --instance-ids ${WebUiInstance} ${KpiInstance}"
+
+  WebUiElasticIp:
+    Description: "webui STABLE Elastic IP (persists across stop/start). Same as 'pynt ec2ip'."
+    Value: !Ref WebUiElasticIp
+
+  KpiElasticIp:
+    Description: "KPI dashboard STABLE Elastic IP (persists across stop/start). Same as 'pynt ec2ip'."
+    Value: !Ref KpiElasticIp
+
+  WebUiUrl:
+    Description: "webui URL (stable Elastic IP)."
+    Value: !Sub "http://${WebUiElasticIp}:${WebUiPortParameter}/"
+
+  KpiUrl:
+    Description: "KPI dashboard URL (stable Elastic IP)."
+    Value: !Sub "http://${KpiElasticIp}:${KpiPortParameter}/"
+
+  ScheduleSummary:
+    Description: "EC2 auto start/stop windows (Asia/Seoul, Mon-Fri)."
+    Value: "MON-FRI KST: 09:00 start / 11:00 stop / 13:00 start / 15:00 stop"
+
+  ScheduleNames:
+    Description: "EventBridge Scheduler schedule names."
+    Value: !Sub "${ScheduleStartMorning}, ${ScheduleStopMorning}, ${ScheduleStartAfternoon}, ${ScheduleStopAfternoon}"

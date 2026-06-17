@@ -1,0 +1,16 @@
+[Unit]
+Description=Rekognition Video Analyzer KPI Dashboard (FastAPI/uvicorn)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kpi
+WorkingDirectory=/opt/kpi/backend
+EnvironmentFile=/etc/kpi-dashboard.env
+ExecStart=/opt/kpi/venv/bin/uvicorn app:app --host 0.0.0.0 --port ${KPI_PORT}
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

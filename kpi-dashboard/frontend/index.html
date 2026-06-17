@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>KPI Dashboard - Rekognition Video Analyzer</title>
+  <link rel="stylesheet" href="src/app.css">
+</head>
+<body>
+  <header>
+    <h1>KPI Dashboard</h1>
+    <div class="meta">
+      <span id="source-badge" class="badge">—</span>
+      <span id="updated">updated: —</span>
+      <span id="status"></span>
+    </div>
+  </header>
+
+  <main class="grid">
+    <section class="card"><h2>Kinesis</h2>
+      <div class="row"><span>put latency avg (ms)</span><b id="kinesis-latency">—</b></div>
+      <div class="row"><span>incoming records</span><b id="kinesis-records">—</b></div>
+      <div class="row"><span>iterator age max (ms)</span><b id="kinesis-iterage">—</b></div>
+    </section>
+    <section class="card"><h2>ImageProcessor</h2>
+      <div class="row"><span>성공</span><b id="ip-ok">—</b></div>
+      <div class="row"><span>실패</span><b id="ip-fail">—</b></div>
+    </section>
+    <section class="card"><h2>Rekognition</h2>
+      <div class="row"><span>DetectLabels 호출 수</span><b id="rk-count">—</b></div>
+    </section>
+    <section class="card"><h2>S3 저장</h2>
+      <div class="row"><span>성공</span><b id="s3-ok">—</b></div>
+      <div class="row"><span>실패</span><b id="s3-fail">—</b></div>
+    </section>
+    <section class="card"><h2>DynamoDB put</h2>
+      <div class="row"><span>성공</span><b id="ddb-ok">—</b></div>
+      <div class="row"><span>실패</span><b id="ddb-fail">—</b></div>
+    </section>
+    <section class="card"><h2>FaceCompare</h2>
+      <div class="row"><span>호출 수</span><b id="fc-count">—</b></div>
+      <div class="row"><span>성공</span><b id="fc-ok">—</b></div>
+      <div class="row"><span>실패</span><b id="fc-fail">—</b></div>
+    </section>
+    <section class="card"><h2>/enrichedframe</h2>
+      <div class="row"><span>호출 수</span><b id="ef-count">—</b></div>
+    </section>
+    <section class="card"><h2>Frames</h2>
+      <div class="row"><span>최근 프레임 수</span><b id="fr-count">—</b></div>
+      <div class="row"><span>latest frame age (s)</span><b id="fr-age">—</b></div>
+    </section>
+  </main>
+
+  <section class="errors">
+    <h2>최근 에러 로그</h2>
+    <table>
+      <thead><tr><th>시각</th><th>component</th><th>event</th><th>error</th></tr></thead>
+      <tbody id="error-rows"><tr><td colspan="4">—</td></tr></tbody>
+    </table>
+  </section>
+
+  <script src="src/app.js"></script>
+</body>
+</html>
