@@ -20,6 +20,8 @@ pyenv*
 build/*
 !build/.gitkeep
 build.pyc
+#local capture client logs (logging/ is a log directory, not a python package)
+logging/
 config/
 !config/
 config/*

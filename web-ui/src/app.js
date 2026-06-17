@@ -22,29 +22,31 @@ var faceCompareAxios = axios.create({
 
 var app = new Vue({
   el: '#app',
-  computed: {
-    selectedFaceBoxStyle: function(){
-      var result = this.faceVerify.result;
-      if(!result || !result.id_image_analysis || !result.id_image_analysis.selected_face){
-        return null;
-      }
-      var box = result.id_image_analysis.selected_face.bounding_box;
-      if(!box){ return null; }
-      return {
-        left: (box.left * 100) + '%',
-        top: (box.top * 100) + '%',
-        width: (box.width * 100) + '%',
-        height: (box.height * 100) + '%'
-      };
-    }
-  },
   methods: {
+  	setupImageDownloadObserver: function(){
+  		// Log real <img> download durations (no extra requests) via Resource Timing.
+  		if(!window.PerformanceObserver){ return; }
+  		try {
+  			var obs = new PerformanceObserver((list) => {
+  				list.getEntries().forEach((e) => {
+  					if(e.initiatorType === 'img'){
+  						// Strip the query string so the presigned signature is never logged.
+  						console.log('[KPI]', {component:'webui', event:'image_download', frame_key_tail: (e.name || '').split('?')[0].slice(-40), browser_image_download_ms: Math.round(e.duration * 10) / 10});
+  					}
+  				});
+  			});
+  			obs.observe({type:'resource', buffered:true});
+  		} catch(err){ /* PerformanceObserver unsupported; ignore */ }
+  	},
   	fetchFrames: function(){
+  		var t0 = performance.now();
   		axiosInstance.get('enrichedframe')
 			.then(response => {
 		      // JSON responses are automatically parsed.
+		      var apiMs = Math.round((performance.now() - t0) * 10) / 10;
 		      console.log(response.data);
 		      this.enrichedframes = response.data;
+		      console.log('[KPI]', {component:'webui', event:'fetch_frames', api_gateway_roundtrip_ms: apiMs, returned_frame_count: (response.data || []).length});
 		    })
 		    .catch(e => {
 		      //this.errors.push(e);
@@ -85,10 +87,12 @@ var app = new Vue({
   		}
   		this.uploadedFilename = file.name;
   		this.uploadedContentType = file.type;
+  		var readStart = performance.now();
   		var reader = new FileReader();
   		reader.onload = (e) => {
   			this.uploadedImageDataUrl = e.target.result;             // data URL for preview
   			this.uploadedImageBase64 = e.target.result.split(',')[1]; // base64 payload only
+  			console.log('[KPI]', {component:'webui', event:'id_image_read', id_image_file_read_ms: Math.round((performance.now() - readStart) * 10) / 10, id_image_base64_size_bytes: (this.uploadedImageBase64 || '').length});
   		};
   		reader.onerror = () => { this.faceCompareError = "파일을 읽지 못했어요."; };
   		reader.readAsDataURL(file);
@@ -98,6 +102,7 @@ var app = new Vue({
   		this.isComparingFace = true;
   		this.faceCompareError = null;
   		this.faceCompareResult = null;
+  		var clickT0 = performance.now();
   		faceCompareAxios.post('face-compare', {
   			imageBase64: this.uploadedImageBase64,
   			filename: this.uploadedFilename,
@@ -106,6 +111,7 @@ var app = new Vue({
   		})
   		.then(response => {
   			this.faceCompareResult = response.data;
+  			console.log('[KPI]', {component:'webui', event:'face_compare', api_gateway_roundtrip_ms: Math.round((performance.now() - clickT0) * 10) / 10});
   		})
   		.catch(e => {
   			if(e.response && e.response.data){
@@ -117,11 +123,24 @@ var app = new Vue({
   		})
   		.then(() => {
   			this.isComparingFace = false;
+  			console.log('[KPI]', {component:'webui', event:'face_compare_done', browser_click_to_result_ms: Math.round((performance.now() - clickT0) * 10) / 10});
   		})
   	},
   	frameTime: function(target){
   		if(!target || target.processed_timestamp == null){ return ''; }
   		return new Date(target.processed_timestamp * 1000).toString();
+  	},
+  	onImageError: function(frame){
+  		// 진단용 핸들러. presigned URL 전체(서명/쿼리스트링 포함)는 절대
+  		// 화면이나 콘솔에 노출하지 않는다. host(버킷+리전)만 추출해 로깅한다.
+  		var host = '';
+  		try {
+  			if(frame && frame.s3_presigned_url){ host = new URL(frame.s3_presigned_url).host; }
+  		} catch(err){ host = '(unparseable)'; }
+  		// frame은 API 응답에서 온 객체라 image_load_error 키가 없어 비반응형이다.
+  		// Vue 2에서는 $set으로 추가해야 화면이 다시 그려진다.
+  		this.$set(frame, 'image_load_error', true);
+  		console.log('[KPI]', {component:'webui', event:'image_load_error', s3_host: host, frame_id_tail: (frame && frame.frame_id ? String(frame.frame_id).slice(-8) : '')});
   	},
   	reasonText: function(reason){
   		var map = {
@@ -142,6 +161,7 @@ var app = new Vue({
   	}
   },
   created: function () {
+    this.setupImageDownloadObserver();
     this.toggleFetchFrames();
   },
   data: {

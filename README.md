@@ -140,16 +140,33 @@ pynt webuiserver
 http://localhost:8080
 ```
 
-웹캠을 사용할 경우 다음 명령어를 실행합니다.
+웹캠을 사용할 경우 다음 명령어를 실행합니다. 대괄호 안의 숫자는 `capture_rate`(N프레임마다 1장
+전송)이며, **값이 클수록 전송 프레임 수와 Rekognition 호출이 줄어 비용이 절감**됩니다.
+인자를 생략하면 기본값 `60`이 적용됩니다.
 
 ```bash
-pynt videocapture[20]
+pynt videocapture          # 기본값 60 (개발/시연 권장)
+pynt videocapture[60]      # 개발/시연 권장
+pynt videocapture[90]      # 저비용 테스트 권장
+pynt videocapture[20]      # 고속 테스트가 필요할 때만 (비용 증가)
 ```
+
+비용 누적을 막기 위해 **실행 시간 자동 종료**를 함께 지정할 수 있습니다. 두 번째 인자는 초 단위이며,
+지정한 시간이 지나면 클라이언트가 스스로 종료합니다.
+
+```bash
+pynt videocapture[60,300]  # 60프레임마다 1장 전송, 300초 후 자동 종료
+```
+
+> 캡처 시작 시 콘솔과 로그에 추정 fps·초/분/시간당 전송 프레임 수와 Rekognition 비용 경고가
+> 출력됩니다. Rekognition `DetectLabels` 호출 자체를 끄려면 `config/imageprocessor-params.json`의
+> `enable_detect_labels`를 `false`로 두거나(재배포 필요), Lambda 환경변수 `ENABLE_DETECT_LABELS=false`로
+> 설정하세요. 이 경우에도 프레임은 S3·DynamoDB에 그대로 저장되고 얼굴 비교 기능은 정상 동작합니다.
 
 IP 카메라나 스마트폰 MJPEG 스트림을 사용할 경우 다음 명령어를 실행합니다.
 
 ```bash
-pynt videocaptureip["http://192.168.0.2/video",20]
+pynt videocaptureip["http://192.168.0.2/video",60]
 ```
 
 ## 6. 주요 빌드 명령어 정리
@@ -162,7 +179,7 @@ pynt videocaptureip["http://192.168.0.2/video",20]
 | `pynt stackstatus`    | CloudFormation 스택 상태 확인       |
 | `pynt webui`          | 웹 UI 빌드 및 API 설정 파일 생성        |
 | `pynt webuiserver`    | 로컬 웹 UI 서버 실행                 |
-| `pynt videocapture`   | 노트북 또는 USB 웹캠에서 프레임 캡처       |
+| `pynt videocapture`   | 노트북 또는 USB 웹캠에서 프레임 캡처 (기본 rate 60, `[rate,초]`로 자동 종료) |
 | `pynt videocaptureip` | IP 카메라 MJPEG 스트림에서 프레임 캡처     |
 | `pynt deletedata`     | S3 프레임 이미지와 DynamoDB 메타데이터 삭제 |
 | `pynt deletestack`    | 생성한 AWS 인프라 삭제                |

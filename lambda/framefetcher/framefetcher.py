@@ -11,6 +11,7 @@ import datetime
 import time
 import json
 import decimal
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 
@@ -63,15 +64,19 @@ def fetch_frames(event, context):
 
         ts_at_fetch_horizon = time.time() - (fetch_horizon_hrs * 60 * 60)
 
+        query_start = time.perf_counter()
         ddb_resp = ddb_table.query(
             IndexName=ddb_gsi_name,
-            
-            KeyConditionExpression=Key('processed_year_month').eq(year + mon) 
+
+            KeyConditionExpression=Key('processed_year_month').eq(year + mon)
             & Key('processed_timestamp').gt(decimal.Decimal(ts_at_fetch_horizon)),
             Limit=fetch_limit,
             ScanIndexForward=False #Sort descendingly -- show most recent captured frames first.
         )
+        query_ms = round((time.perf_counter() - query_start) * 1000.0, 1)
 
+        presign_start = time.perf_counter()
+        presigned_sample = None  # masked diagnostic sample of the first generated URL
         for item in ddb_resp["Items"]:
 
             s3_key = item["s3_key"]
@@ -94,8 +99,41 @@ def fetch_frames(event, context):
             )
 
             item['s3_presigned_url'] = s3_presigned_url
-        
-        print (ddb_resp)
+
+            # Diagnostic only: capture host/region/key-tail of the FIRST URL so we can
+            # confirm in CloudWatch which bucket/region the browser is being pointed at.
+            # urlsplit().netloc drops the query string, so the SigV4 signature and
+            # credentials are NEVER logged. Host looks like:
+            #   <bucket>.s3.<region>.amazonaws.com
+            if presigned_sample is None:
+                netloc = urlsplit(s3_presigned_url).netloc
+                region = None
+                parts = netloc.split('.')
+                # Pull the segment right after the literal "s3" label, if present.
+                if 's3' in parts:
+                    i = parts.index('s3')
+                    if i + 1 < len(parts) and parts[i + 1] != 'amazonaws':
+                        region = parts[i + 1]
+                presigned_sample = {
+                    "s3_host": netloc,
+                    "s3_region_from_host": region,
+                    "s3_key_tail": s3_key[-16:]
+                }
+
+        presigned_url_generation_ms = round((time.perf_counter() - presign_start) * 1000.0, 1)
+
+        # Structured KPI log (CloudWatch). Do NOT log presigned URLs or full items
+        # (they contain signed S3 access); only counts/timings.
+        print(json.dumps({
+            "component": "framefetcher",
+            "event": "fetch_complete",
+            "request_id": getattr(context, "aws_request_id", None),
+            "framefetcher_dynamodb_query_ms": query_ms,
+            "presigned_url_generation_ms": presigned_url_generation_ms,
+            "returned_frame_count": len(ddb_resp["Items"]),
+            "fetch_limit": fetch_limit,
+            "presigned_sample": presigned_sample
+        }, default=str))
 
         return respond(None, ddb_resp["Items"])
 

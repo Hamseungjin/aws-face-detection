@@ -99,6 +99,42 @@ def updatelambda(*functions):
     return
 
 @task()
+def setlogretention(*functions, **kwargs):
+    '''Set CloudWatch Logs retention (days) on each Lambda's log group.
+
+    Idempotent and safe whether or not the log group already exists:
+      - creates the log group if missing (ignores "already exists"),
+      - then sets the retention policy.
+    This avoids the CloudFormation "log group already exists" failure that
+    occurs when declaring AWS::Logs::LogGroup resources for functions whose
+    groups were already auto-created. Pass days via kwarg, default 30.
+    Usage: pynt setlogretention            (all functions, 30 days)
+           pynt setlogretention[imageprocessor]
+    '''
+    days = int(kwargs.get("days", 30))
+
+    if(len(functions) == 0):
+        functions = ("framefetcher", "imageprocessor", "facecompare")
+
+    logs_client = boto3.client("logs")
+
+    for function in functions:
+        log_group_name = "/aws/lambda/%s" % function
+        try:
+            logs_client.create_log_group(logGroupName=log_group_name)
+            print("Created log group '%s'." % log_group_name)
+        except logs_client.exceptions.ResourceAlreadyExistsException:
+            print("Log group '%s' already exists." % log_group_name)
+
+        logs_client.put_retention_policy(
+            logGroupName=log_group_name,
+            retentionInDays=days
+        )
+        print("Set retention of '%s' to %d days." % (log_group_name, days))
+
+    return
+
+@task()
 def deploylambda(* functions, **kwargs):
     '''Upload lambda functions .zip file to S3 for download by CloudFormation stack during creation.'''
     
@@ -390,11 +426,21 @@ def videocaptureip(videouri, capturerate="30", clientdir="client"):
     return
 
 @task()
-def videocapture(capturerate="30",clientdir="client"):
-    '''Run the video capture client with built-in camera. Default capture rate is 1 every 30 frames.'''
+def videocapture(capturerate="60", maxseconds="", clientdir="client"):
+    '''Run the video capture client with built-in camera.
+
+    Default capture rate is 1 every 60 frames (cost-friendly default for demos).
+    Recommended: videocapture[60] for dev/demo, videocapture[90] for low-cost tests,
+    videocapture[20] only when high-speed capture is needed.
+    Optional maxseconds auto-stops the client after N seconds, e.g. videocapture[60,300].'''
     os.chdir(clientdir)
-    
-    call([sys.executable, "video_cap.py", capturerate])
+
+    # Pass maxseconds through only when supplied so the no-arg / single-arg
+    # behaviour (run until 'q' / camera EOF) is preserved.
+    cmd = [sys.executable, "video_cap.py", capturerate]
+    if maxseconds:
+        cmd.append(maxseconds)
+    call(cmd)
 
     os.chdir("..")
 

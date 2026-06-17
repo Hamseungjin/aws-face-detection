@@ -266,7 +266,7 @@ def respond(result):
     }
 
 
-def run(event):
+def run(event, context=None):
     # Accumulate context so the error path can report whatever we already have.
     # source carries only NON-sensitive metadata (filename, type, byte length).
     source = {"filename": None, "contentType": None, "image_bytes": None}
@@ -274,13 +274,37 @@ def run(event):
     age_seconds = None
     threshold = None
 
+    # KPI timers (ms); stay None until the corresponding step runs.
+    t_start = time.perf_counter()
+    source_image_prepare_ms = None
+    recent_frame_lookup_ms = None
+    rekognition_compare_faces_ms = None
+
+    def log_kpi(reason):
+        # Structured KPI log (CloudWatch). PRIVACY: only sizes/ids/timings -- never image bytes.
+        print(json.dumps({
+            "component": "facecompare",
+            "event": "compare_complete",
+            "request_id": getattr(context, "aws_request_id", None),
+            "reason": reason,
+            "frame_id": (target or {}).get("frame_id"),
+            "source_image_bytes": source.get("image_bytes"),
+            "recent_frame_lookup_ms": recent_frame_lookup_ms,
+            "source_image_prepare_ms": source_image_prepare_ms,
+            "rekognition_compare_faces_ms": rekognition_compare_faces_ms,
+            "facecompare_total_lambda_ms": round((time.perf_counter() - t_start) * 1000.0, 1),
+            "age_seconds": age_seconds,
+        }, default=str))
+
     try:
         config = load_config()
 
         body = parse_body(event)
         source["filename"] = body.get("filename")
 
+        _prep_start = time.perf_counter()
         image_bytes, content_type = decode_image(body, config)
+        source_image_prepare_ms = round((time.perf_counter() - _prep_start) * 1000.0, 1)
         source["contentType"] = content_type
         source["image_bytes"] = len(image_bytes)  # length ONLY -- never the bytes
 
@@ -290,7 +314,9 @@ def run(event):
             threshold = float(config["similarity_threshold"])
 
         now_epoch = time.time()
+        _lookup_start = time.perf_counter()
         item = query_latest_frame(config)
+        recent_frame_lookup_ms = round((time.perf_counter() - _lookup_start) * 1000.0, 1)
         if item is None:
             raise CompareError("NO_LATEST_FRAME",
                                detail="no frame found in current or previous month")
@@ -322,26 +348,32 @@ def run(event):
                 detail="latest frame age {}s exceeds horizon {}s".format(
                     age_seconds, int(horizon_seconds)))
 
+        _compare_start = time.perf_counter()
         similarity = compare_faces(image_bytes, target, config)
+        rekognition_compare_faces_ms = round((time.perf_counter() - _compare_start) * 1000.0, 1)
         matched = similarity >= threshold
         reason = "SIMILARITY_ABOVE_THRESHOLD" if matched else "SIMILARITY_BELOW_THRESHOLD"
         result = build_result(True, matched, round(similarity, 4), threshold, reason,
                               source, target, age_seconds, None)
         print("facecompare ok: frame_id={} similarity={} matched={}".format(
             target.get("frame_id"), result["similarity"], matched))
+        log_kpi(reason)
         return result
 
     except CompareError as err:
         print("facecompare fail: reason={} aws_code={}".format(err.reason, err.aws_code))
+        log_kpi(err.reason)
         return build_result(False, False, None, threshold, err.reason, source, target,
                             age_seconds, {"detail": err.detail, "aws_code": err.aws_code})
     except botocore.exceptions.NoCredentialsError:
+        log_kpi("ACCESS_DENIED")
         return build_result(False, False, None, threshold, "ACCESS_DENIED", source, target,
                             age_seconds, {"detail": "no AWS credentials found", "aws_code": None})
     except botocore.exceptions.BotoCoreError as err:
+        log_kpi("AWS_API_ERROR")
         return build_result(False, False, None, threshold, "AWS_API_ERROR", source, target,
                             age_seconds, {"detail": str(err), "aws_code": None})
 
 
 def handler(event, context):
-    return respond(run(event))
+    return respond(run(event, context))

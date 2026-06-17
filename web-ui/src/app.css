@@ -248,3 +248,15 @@ input:checked + .slider:before {
   margin-top: 10px;
   color: #FF6B6B;
 }
+
+/* 프레임 썸네일 로드 실패/URL 없음 안내. 부모 .container-img가 font:0/0 a 로
+   인라인 간격을 제거하므로, 여기서 폰트를 다시 지정하지 않으면 글자가 안 보인다. */
+.image-error{
+  display: inline-block;
+  vertical-align: middle;
+  max-width: 230px;
+  padding: 8px;
+  color: #FF6B6B;
+  font: 13px/1.4 Arial, sans-serif;
+  text-align: center;
+}
