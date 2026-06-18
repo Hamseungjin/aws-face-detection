@@ -338,7 +338,19 @@ pynt setwebuiauth           # SSM 갱신 후 인스턴스 재부팅(또는 syste
 
 # EC2만 삭제
 pynt deleteec2stack
+
+# EC2 중지
+aws ec2 stop-instances \
+  --region ap-northeast-2 --profile video-analyzer \
+  --instance-ids i-064aa4033fd428313 i-02115c204ecf26406
+
+# EC2 재시작
+aws ec2 start-instances --region ap-northeast-2 --profile video-analyzer --instance-ids i-064aa4033fd428313 i-02115c204ecf26406
+  
+
 ```
+
+
 
 EC2만 삭제하면 서버리스 스택과 저장 데이터는 유지됩니다. 문제 진단은 SSM Session Manager로 접속해
 `systemctl status webui`, `journalctl -u webui -n 100`, `/var/log/webui-bootstrap.log` 를 확인합니다.
