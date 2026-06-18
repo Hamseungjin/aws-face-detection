@@ -6,6 +6,7 @@
 from __future__ import print_function
 
 import boto3
+from botocore.client import Config
 from boto3.dynamodb.conditions import Key, Attr
 import datetime
 import time
@@ -46,7 +47,11 @@ def fetch_frames(event, context):
 
     #Initialize clients
     dynamodb = boto3.resource('dynamodb')
-    s3_client = boto3.client('s3')
+    # Generate presigned URLs against the REGIONAL virtual-hosted S3 endpoint
+    # (bucket.s3.<region>.amazonaws.com) using SigV4. Without this, boto3 may emit the
+    # global "s3.amazonaws.com" endpoint, whose signature does NOT validate for a bucket
+    # outside us-east-1 -> the browser <img> load fails with HTTP 403 SignatureDoesNotMatch.
+    s3_client = boto3.client('s3', config=Config(signature_version='s3v4', s3={'addressing_style': 'virtual'}))
     
     #Load config
     config = load_config()

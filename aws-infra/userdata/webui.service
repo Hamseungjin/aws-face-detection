@@ -1,15 +1,18 @@
 [Unit]
-Description=Rekognition Video Analyzer Web UI (static http.server)
+Description=Rekognition Video Analyzer Web UI (FastAPI/uvicorn: login + browser capture)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 User=webui
+WorkingDirectory=/opt/webui/backend
 EnvironmentFile=/etc/webui.env
-# Regenerate apigw.js from the data stack before each start (self-correcting config).
-ExecStartPre=/opt/webui-genconfig.sh
-ExecStart=/bin/sh -c '/usr/bin/python3 -m http.server "$WEBUI_PORT" --directory /opt/webui'
+# HTTPS is REQUIRED so the browser allows getUserMedia (camera). The self-signed
+# cert is generated at first boot by webui-bootstrap.sh. apiBaseUrl/apiKey are served
+# by the backend's auth-gated GET /api/config (no static apigw.js), so no ExecStartPre.
+ExecStart=/opt/webui/venv/bin/uvicorn app:app --host 0.0.0.0 --port ${WEBUI_PORT} \
+          --ssl-keyfile /etc/webui/tls.key --ssl-certfile /etc/webui/tls.crt
 Restart=always
 RestartSec=3
 

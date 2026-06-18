@@ -26,23 +26,45 @@ or in the "license" file accompanying this file. This file is distributed on an 
 
 <body>
     <div id="app">
-    
+
+    <!-- ============ LOADING (auth state unknown) ============ -->
+    <div v-if="authenticated === null" class="login-wrap">
+      <div class="login-card">로딩 중...</div>
+    </div>
+
+    <!-- ============ LOGIN VIEW (unauthenticated) ============ -->
+    <div v-else-if="!authenticated" class="login-wrap">
+      <div class="login-card">
+        <h2>로그인</h2>
+        <form v-on:submit.prevent="login">
+          <input class="login-input" type="text" v-model="username" placeholder="아이디" autocomplete="username" autofocus>
+          <input class="login-input" type="password" v-model="password" placeholder="비밀번호" autocomplete="current-password">
+          <button class="login-btn" type="submit" v-bind:disabled="loggingIn">{{ loggingIn ? "확인 중..." : "로그인" }}</button>
+        </form>
+        <div v-if="loginError" class="login-error">{{ loginError }}</div>
+      </div>
+    </div>
+
+    <!-- ============ MAIN VIEW (authenticated) ============ -->
+    <template v-else>
     <div class="header">
         <h1><img class="logo" src="logo.png" alt="Logo">Amazon Rekognition Video Analyzer</h1>
+        <button class="logout-btn" v-on:click="logout">로그아웃 ({{ user }})</button>
     </div>
 
     <div class="outer-grid">
       <div class="inner-grid-list">
+        <div v-if="configError" class="config-note">프레임 조회 설정을 불러오지 못했어요 ({{ configError }}). 촬영 기능은 사용할 수 있어요.</div>
         <span v-if="enrichedframes && enrichedframes.length">
           <div v-for="frame of enrichedframes" class="inner-grid">
-              <div class="container-img"> 
+              <div class="container-img">
                 <img v-if="frame.s3_presigned_url && !frame.image_load_error"
                      class="frame-image"
                      v-bind:src="frame.s3_presigned_url"
                      alt="Video Frame Here"
                      v-on:error="onImageError(frame)" />
                 <div v-else-if="frame.image_load_error" class="image-error">이미지 로드 실패: Network에서 S3 요청 상태코드를 확인하세요</div>
-                <div v-else class="image-error">이미지 URL 없음</div> 
+                <div v-else class="image-error">이미지 URL 없음</div>
               </div>
               <div class="container">
                 <div>
@@ -68,10 +90,37 @@ or in the "license" file accompanying this file. This file is distributed on an 
       <div>
         <h2>Settings</h2>
 
+        <!-- ============ 촬영하기 (browser webcam capture) ============ -->
+        <div class="load capture-panel">
+            <h2>촬영하기</h2>
+            <video ref="video" class="capture-video" autoplay playsinline muted></video>
+
+            <div class="capture-config">
+              <label>frameInterval
+                <input type="number" min="1" step="1" v-model.number="frameInterval" class="threshold-input">
+              </label>
+              <label>durationSeconds
+                <input type="number" min="1" step="1" v-model.number="durationSeconds" class="threshold-input">
+              </label>
+            </div>
+
+            <div>
+              <button class="compare-btn" v-on:click="startCapture" v-bind:disabled="captureState === 'capturing'">촬영 시작</button>
+              <button class="stop-btn" v-on:click="stopCapture" v-bind:disabled="captureState !== 'capturing'">촬영 중지</button>
+            </div>
+
+            <div class="capture-status">
+              <div>상태: <b v-bind:class="'cap-' + captureState">{{ captureStateLabel }}</b></div>
+              <div>전송 성공: <b>{{ sentCount }}</b> / 실패: <b>{{ failedCount }}</b></div>
+              <div v-if="captureState === 'capturing'">남은 시간: <b>{{ remainingSeconds }}</b>s</div>
+              <div v-if="lastSentAt">마지막 전송: {{ lastSentAt }}</div>
+              <div v-if="lastError" class="capture-error">마지막 에러: {{ lastError }}</div>
+            </div>
+        </div>
+
         <div class="load">
-            
             <div>Autoload</div>
-            <div> 
+            <div>
               <label class="switch">
                 <input type="checkbox" v-on:click="toggleFetchFrames" :checked="autoload">
                 <div class="slider round"></div>
@@ -120,9 +169,9 @@ or in the "license" file accompanying this file. This file is distributed on an 
         </div>
       </div>
     </div>
+    </template>
 </div>
 
-  <script type="text/javascript" src="src/apigw.js"></script>
   <script type="text/javascript" src="src/app.js"></script>
 </body>
 

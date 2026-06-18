@@ -260,3 +260,100 @@ input:checked + .slider:before {
   font: 13px/1.4 Arial, sans-serif;
   text-align: center;
 }
+
+/* ---------- login view ---------- */
+.login-wrap {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 80vh;
+}
+
+.login-card {
+  background-color: #323C50;
+  padding: 28px 32px;
+  border-radius: 8px;
+  box-shadow: 2px 3px 12px #11151f;
+  min-width: 280px;
+  text-align: center;
+}
+
+.login-input {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin: 8px 0;
+  padding: 10px;
+  border: none;
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 0.95em;
+}
+
+.login-btn {
+  width: 100%;
+  margin-top: 10px;
+  padding: 10px 12px;
+  background-color: #2196F3;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.95em;
+}
+
+.login-btn:disabled { background-color: #5b6577; cursor: not-allowed; }
+.login-error { margin-top: 12px; color: #FF6B6B; }
+
+.header { position: relative; }
+
+.logout-btn {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  padding: 6px 12px;
+  background-color: #5b6577;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+/* ---------- 촬영하기 (capture) panel ---------- */
+.capture-panel { margin-bottom: 1.5em; }
+
+.capture-video {
+  width: 100%;
+  max-width: 260px;
+  background: #000;
+  border-radius: 4px;
+  margin-bottom: 8px;
+  transform: scaleX(-1);   /* mirror preview like a selfie cam */
+}
+
+.capture-config label { display: block; margin: 4px 0; }
+
+.stop-btn {
+  margin-top: 8px;
+  margin-left: 8px;
+  padding: 8px 12px;
+  background-color: #FF6B6B;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.95em;
+}
+
+.stop-btn:disabled { background-color: #5b6577; cursor: not-allowed; }
+
+.capture-status { margin-top: 10px; line-height: 1.7em; }
+.capture-error { color: #FF6B6B; word-break: break-all; }
+.config-note { color: #FFF842; padding: 8px; font-size: 0.9em; }
+
+.cap-capturing { color: #2ECC71; }
+.cap-error { color: #FF6B6B; }
+.cap-stopped { color: #FFF842; }

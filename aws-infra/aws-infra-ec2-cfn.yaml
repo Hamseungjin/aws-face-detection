@@ -106,6 +106,16 @@ Parameters:
     Default: "processed_year_month-processed_timestamp-index"
     Description: "DynamoDB GSI name (for the KPI role's index ARN scope)."
 
+  KinesisStreamNameParameter:
+    Type: String
+    Default: "FrameStream"
+    Description: "Name of the data stack's Kinesis stream the webui capture backend puts browser frames to."
+
+  WebUiAuthSsmPrefixParameter:
+    Type: String
+    Default: "/video-analyzer/webui"
+    Description: "SSM Parameter Store prefix holding webui login secrets (auth-username, password-hash, session-secret). Set with 'pynt setwebuiauth'."
+
 Resources:
 
   WebUiSecurityGroup:
@@ -168,6 +178,34 @@ Resources:
               - Effect: Allow
                 Action: apigateway:GET
                 Resource: !Sub "arn:aws:apigateway:${AWS::Region}::/apikeys/*"
+        # Browser-capture backend puts frames to the data stack's Kinesis stream
+        # (same stream client/video_cap.py uses). Scoped to that one stream ARN.
+        - PolicyName: webui-kinesis-put
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - kinesis:PutRecord
+                  - kinesis:PutRecords
+                Resource: !Sub "arn:aws:kinesis:${AWS::Region}:${AWS::AccountId}:stream/${KinesisStreamNameParameter}"
+        # Read login secrets (username/password-hash/session-secret) from SSM at boot.
+        # kms:Decrypt is needed for SecureString and is constrained to SSM via condition.
+        - PolicyName: webui-auth-ssm-read
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${WebUiAuthSsmPrefixParameter}/*"
+              - Effect: Allow
+                Action: kms:Decrypt
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub "ssm.${AWS::Region}.amazonaws.com"
       Tags:
         - { Key: Name, Value: video-analyzer-webui-role }
 
@@ -283,7 +321,7 @@ Resources:
           mkdir -p /opt/app
           if aws s3 cp "s3://${AppArtifactS3BucketParameter}/${AppArtifactS3KeyPrefixParameter}webui/bootstrap.sh" /opt/app/bootstrap.sh; then
             chmod +x /opt/app/bootstrap.sh
-            WEBUI_PORT="${WebUiPortParameter}" DATA_STACK="${DataStackNameParameter}" DATA_API_STAGE="${DataApiStageNameParameter}" ARTIFACT_BUCKET="${AppArtifactS3BucketParameter}" ARTIFACT_PREFIX="${AppArtifactS3KeyPrefixParameter}" /opt/app/bootstrap.sh
+            WEBUI_PORT="${WebUiPortParameter}" DATA_STACK="${DataStackNameParameter}" DATA_API_STAGE="${DataApiStageNameParameter}" ARTIFACT_BUCKET="${AppArtifactS3BucketParameter}" ARTIFACT_PREFIX="${AppArtifactS3KeyPrefixParameter}" KINESIS_STREAM="${KinesisStreamNameParameter}" WEBUI_AUTH_SSM_PREFIX="${WebUiAuthSsmPrefixParameter}" /opt/app/bootstrap.sh
           else
             echo "No webui bootstrap.sh yet (publish it with 'pynt publishapps webui'). SSM-only for now."
           fi

@@ -34,6 +34,19 @@ def read_json(jsonf_path):
         json_text = jsonf.read()
         return json.loads(json_text)
 
+def _exclude_dev_files(tarinfo):
+    '''tarfile filter: never package local dev secrets/venvs/caches into app artifacts.
+
+    Without this, a developer's web-ui/backend/.env (login secrets) or .venv could be
+    tarred by publishapps and uploaded to S3 + extracted onto the instance.'''
+    parts = tarinfo.name.split('/')
+    base = parts[-1]
+    # Exclude ALL env files (.env, .env.example, .env.local, ...): deploy artifacts must
+    # never carry env files -- the instance is configured from /etc/webui.env (systemd).
+    if base.startswith('.env') or base.endswith('.pyc') or '.venv' in parts or '__pycache__' in parts:
+        return None
+    return tarinfo
+
 def check_bucket_exists(bucketname):
     s3 = boto3.resource('s3')
     bucket = s3.Bucket(bucketname)
@@ -663,7 +676,7 @@ def publishapps(*apps, **kwargs):
             tar_path = "build/web-ui.tgz"
             print("Packaging web-ui/ -> %s" % tar_path)
             with tarfile.open(tar_path, "w:gz") as tar:
-                tar.add("web-ui", arcname=".")
+                tar.add("web-ui", arcname=".", filter=_exclude_dev_files)
 
             uploads = [
                 (tar_path, "%swebui/web-ui.tgz" % prefix),
@@ -678,7 +691,7 @@ def publishapps(*apps, **kwargs):
             tar_path = "build/kpi-dashboard.tgz"
             print("Packaging kpi-dashboard/ -> %s" % tar_path)
             with tarfile.open(tar_path, "w:gz") as tar:
-                tar.add("kpi-dashboard", arcname=".")
+                tar.add("kpi-dashboard", arcname=".", filter=_exclude_dev_files)
 
             uploads = [
                 (tar_path, "%skpi/kpi-dashboard.tgz" % prefix),
@@ -692,4 +705,52 @@ def publishapps(*apps, **kwargs):
             print("Unknown app '%s' (expected 'webui' or 'kpi'). Skipping." % app)
 
     return
+
+@task()
+def setwebuiauth(**kwargs):
+    '''Store Web UI login credentials in SSM Parameter Store (SecureString).
+
+    Prompts for username + password, computes a PBKDF2-SHA256 hash (the plaintext
+    password is NEVER stored or printed), generates a random session secret, and writes
+    three SSM parameters under the prefix (default /video-analyzer/webui):
+        <prefix>/auth-username   (String)
+        <prefix>/password-hash   (SecureString)
+        <prefix>/session-secret  (SecureString)
+    The webui instance reads these at boot (webui-bootstrap.sh). Run this BEFORE
+    'pynt createec2stack' / 'pynt updateec2stack', and re-run + reboot to rotate.
+
+    AWS: writes 3 SSM parameters (standard tier = free). Needs ssm:PutParameter.
+    Usage: pynt setwebuiauth   or   pynt "setwebuiauth[ssm_prefix=/my/prefix]"
+    '''
+    import getpass, hashlib, base64, secrets as _secrets
+
+    prefix = kwargs.get("ssm_prefix", "/video-analyzer/webui")
+
+    username = input("Web UI username: ").strip()
+    if not username:
+        print("Empty username. Aborting.")
+        return
+    pw1 = getpass.getpass("Web UI password: ")
+    pw2 = getpass.getpass("Confirm password: ")
+    if not pw1 or pw1 != pw2:
+        print("Passwords empty or do not match. Aborting.")
+        return
+
+    iterations = 200000
+    salt = os.urandom(16)
+    dk = hashlib.pbkdf2_hmac("sha256", pw1.encode("utf-8"), salt, iterations)
+    pw_hash = "pbkdf2_sha256$%d$%s$%s" % (
+        iterations, base64.b64encode(salt).decode(), base64.b64encode(dk).decode())
+    session_secret = _secrets.token_urlsafe(48)
+
+    ssm = boto3.client("ssm")
+    for name, value, ptype in [
+        ("%s/auth-username" % prefix, username, "String"),
+        ("%s/password-hash" % prefix, pw_hash, "SecureString"),
+        ("%s/session-secret" % prefix, session_secret, "SecureString"),
+    ]:
+        ssm.put_parameter(Name=name, Value=value, Type=ptype, Overwrite=True)
+        print("Put %s (%s)" % (name, ptype))
+
+    print("Done. Stored under '%s'. Re-run bootstrap / reboot the webui instance to apply." % prefix)
 
