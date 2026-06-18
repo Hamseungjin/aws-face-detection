@@ -26,6 +26,7 @@ from pathlib import Path
 
 import boto3
 from botocore.config import Config as BotoConfig
+from botocore.exceptions import ClientError
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -55,6 +56,9 @@ _KINESIS_CONFIG = BotoConfig(
     retries={"max_attempts": 3, "mode": "standard"}, tcp_keepalive=True,
 )
 _kinesis = boto3.client("kinesis", region_name=config.REGION, config=_KINESIS_CONFIG)
+
+# Lambda client used to toggle imageprocessor's ENABLE_DETECT_LABELS env var.
+_lambda = boto3.client("lambda", region_name=config.REGION)
 
 _gw_cache = {"data": None, "at": 0.0}
 _gw_lock = threading.Lock()
@@ -173,6 +177,66 @@ def api_config(request: Request):
     except Exception as e:
         # Frame viewing is optional; capture still works without it.
         raise HTTPException(status_code=503, detail="config unavailable: %s" % e)
+
+
+# --- DetectLabels cost switch (auth required) ------------------------------
+# Toggles the imageprocessor Lambda's ENABLE_DETECT_LABELS env var at runtime
+# (imageprocessor reads os.environ on every invocation, so no redeploy needed).
+class DetectLabelsIn(BaseModel):
+    enabled: bool
+
+
+def _truthy(value):
+    return str(value).strip().lower() in ("true", "1", "yes")
+
+
+@app.get("/api/detect-labels")
+def get_detect_labels(request: Request):
+    require_user(request)
+    try:
+        cfg = _lambda.get_function_configuration(
+            FunctionName=config.IMAGEPROCESSOR_FUNCTION_NAME)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail="lambda get-config failed: %s" % e)
+    variables = (cfg.get("Environment") or {}).get("Variables") or {}
+    return {
+        "enabled": _truthy(variables.get("ENABLE_DETECT_LABELS", "")),
+        "lastUpdateStatus": cfg.get("LastUpdateStatus"),
+    }
+
+
+@app.post("/api/detect-labels")
+def set_detect_labels(body: DetectLabelsIn, request: Request):
+    require_user(request)
+    # Read the FULL existing env var map and change ONLY ENABLE_DETECT_LABELS.
+    # UpdateFunctionConfiguration REPLACES Environment.Variables wholesale, so the
+    # other keys (ENABLE_S3_LOGGING, LOG_BUCKET_NAME, ...) must be carried over or
+    # they'd be wiped.
+    try:
+        cfg = _lambda.get_function_configuration(
+            FunctionName=config.IMAGEPROCESSOR_FUNCTION_NAME)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail="lambda get-config failed: %s" % e)
+    variables = dict((cfg.get("Environment") or {}).get("Variables") or {})
+    variables["ENABLE_DETECT_LABELS"] = "true" if body.enabled else "false"
+    try:
+        resp = _lambda.update_function_configuration(
+            FunctionName=config.IMAGEPROCESSOR_FUNCTION_NAME,
+            Environment={"Variables": variables},
+        )
+    except ClientError as e:
+        code = e.response.get("Error", {}).get("Code", "")
+        if code == "ResourceConflictException":
+            # A previous update is still applying; Lambda rejects concurrent updates.
+            raise HTTPException(status_code=409,
+                detail="이전 변경이 적용 중입니다. 잠시 후 다시 시도하세요.")
+        raise HTTPException(status_code=502, detail="lambda update failed: %s" % e)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail="lambda update failed: %s" % e)
+    return {
+        "enabled": body.enabled,
+        "lastUpdateStatus": resp.get("LastUpdateStatus"),
+    }
 
 
 @app.get("/healthz")

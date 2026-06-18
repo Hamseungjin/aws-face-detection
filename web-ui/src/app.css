@@ -357,3 +357,24 @@ input:checked + .slider:before {
 .cap-capturing { color: #2ECC71; }
 .cap-error { color: #FF6B6B; }
 .cap-stopped { color: #FFF842; }
+
+/* ---------- 라벨 감지(DetectLabels) 토글 메시지 ---------- */
+/* 토글 자체는 Autoload 와 동일한 .load + .switch 마크업을 재사용하므로 추가 스타일이
+   필요 없다. 아래는 상태/오류/비용 경고 줄을 촬영 패널 톤과 맞추되, 비용 경고는
+   빨간 에러보다 차분한 앰버로 '명확하지만 튀지 않게' 표시하기 위한 규칙이다. */
+.dl-status {
+  margin-top: 10px;
+  line-height: 1.6em;
+  font-size: 0.9em;
+}
+
+.dl-applying { color: #FFF842; }                       /* 적용 중: 진행 표시(기존 .fc-loading 과 동일 톤) */
+.dl-state b  { color: #4DC3FA; }                       /* 상태 값은 액센트 블루로 강조 */
+.dl-error    { color: #FF6B6B; word-break: break-all; } /* 실제 오류는 빨강(기존 에러와 동일) */
+
+.dl-note {
+  margin-top: 4px;
+  color: #D9A441;                                      /* 차분한 앰버: 비용 경고를 명확하지만 덜 튀게 */
+  font-size: 0.85em;
+  line-height: 1.4em;
+}

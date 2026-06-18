@@ -128,6 +128,23 @@ or in the "license" file accompanying this file. This file is distributed on an 
             </div>
         </div>
 
+        <!-- ============ 라벨 감지(DetectLabels) 토글 ============ -->
+        <div class="load">
+            <div>라벨 감지(DetectLabels)</div>
+            <div>
+              <label class="switch">
+                <input type="checkbox" v-on:click="toggleDetectLabels" :checked="detectLabelsEnabled" v-bind:disabled="detectLabelsBusy">
+                <div class="slider round"></div>
+              </label>
+            </div>
+        </div>
+        <div class="dl-status" v-if="detectLabelsBusy || detectLabelsStatus || detectLabelsError">
+            <div v-if="detectLabelsBusy" class="dl-applying">적용 중... (반영까지 수 초 걸릴 수 있어요)</div>
+            <div v-else-if="detectLabelsStatus" class="dl-state">상태: <b>{{ detectLabelsStatus }}</b></div>
+            <div v-if="detectLabelsError" class="dl-error">오류: {{ detectLabelsError }}</div>
+            <div class="dl-note">※ 켜면 프레임마다 Rekognition DetectLabels 비용이 발생합니다.</div>
+        </div>
+
         <div class="load face-compare">
             <h2>얼굴 비교</h2>
             <div>기준 얼굴 이미지 업로드 (JPG/PNG, 최대 4MB)</div>

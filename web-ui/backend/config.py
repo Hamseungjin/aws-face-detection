@@ -51,3 +51,8 @@ DATA_STACK = os.getenv("DATA_STACK", "video-analyzer-stack")
 DATA_API_STAGE = os.getenv("DATA_API_STAGE", "development")
 DATA_REST_API_LOGICAL_ID = os.getenv("DATA_REST_API_LOGICAL_ID", "VidAnalyzerRestApi")
 DATA_API_KEY_LOGICAL_ID = os.getenv("DATA_API_KEY_LOGICAL_ID", "VidAnalyzerApiKey")
+
+# imageprocessor Lambda whose ENABLE_DETECT_LABELS env var the web UI toggles at
+# runtime. FunctionName is hardcoded in the data stack (aws-infra-cfn.yaml), so the
+# physical name is deterministic -- no CloudFormation lookup needed.
+IMAGEPROCESSOR_FUNCTION_NAME = os.getenv("IMAGEPROCESSOR_FUNCTION_NAME", "imageprocessor")

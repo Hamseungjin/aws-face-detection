@@ -206,6 +206,18 @@ Resources:
                 Condition:
                   StringEquals:
                     kms:ViaService: !Sub "ssm.${AWS::Region}.amazonaws.com"
+        # Web UI toggles the imageprocessor Lambda's ENABLE_DETECT_LABELS env var
+        # (the Rekognition DetectLabels cost switch) at runtime. Scoped to that ONE
+        # function -- read current config + write back the full env var map.
+        - PolicyName: webui-imageprocessor-lambda-config
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:GetFunctionConfiguration
+                  - lambda:UpdateFunctionConfiguration
+                Resource: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:imageprocessor"
       Tags:
         - { Key: Name, Value: video-analyzer-webui-role }
 

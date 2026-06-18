@@ -73,6 +73,36 @@ var app = new Vue({
   	afterLogin: function(){
   		this.setupImageDownloadObserver();
   		this.loadConfig();
+  		this.loadDetectLabels();
+  	},
+  	// ---------- 라벨 감지(DetectLabels) 토글 ----------
+  	loadDetectLabels: function(){
+  		var self = this;
+  		apiAxios.get('detect-labels')
+  			.then(function(r){
+  				self.detectLabelsEnabled = !!(r.data && r.data.enabled);
+  				self.detectLabelsStatus = (r.data && r.data.lastUpdateStatus) || '';
+  				self.detectLabelsError = null;
+  			})
+  			.catch(function(e){
+  				self.detectLabelsError = (e.response && e.response.data && e.response.data.detail) || e.message || "라벨 감지 상태 조회 실패";
+  			});
+  	},
+  	toggleDetectLabels: function(){
+  		var self = this;
+  		if(this.detectLabelsBusy){ return; }
+  		var next = !this.detectLabelsEnabled;
+  		this.detectLabelsBusy = true;
+  		this.detectLabelsError = null;
+  		apiAxios.post('detect-labels', { enabled: next })
+  			.then(function(r){
+  				self.detectLabelsEnabled = !!(r.data && r.data.enabled);
+  				self.detectLabelsStatus = (r.data && r.data.lastUpdateStatus) || '';
+  			})
+  			.catch(function(e){
+  				self.detectLabelsError = (e.response && e.response.data && e.response.data.detail) || e.message || "변경 실패";
+  			})
+  			.then(function(){ self.detectLabelsBusy = false; });
   	},
   	loadConfig: function(){
   		var self = this;
@@ -319,5 +349,10 @@ var app = new Vue({
     isComparingFace: false,
     faceCompareResult: null,
     faceCompareError: null,
+    // 라벨 감지(DetectLabels) 토글
+    detectLabelsEnabled: false,
+    detectLabelsBusy: false,
+    detectLabelsStatus: '',
+    detectLabelsError: null,
   },
 })
