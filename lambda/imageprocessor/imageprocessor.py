@@ -42,6 +42,27 @@ def _resolve_enable_detect_labels(config):
         return env.strip().lower() in ("true", "1", "yes")
     return bool(config.get("enable_detect_labels", True))
 
+def _resolve_frame_id(frame_package):
+    '''Use a valid correlated CaptureId, or retain legacy UUID generation.
+
+    CaptureId is optional for compatibility with client/video_cap.py and other
+    existing producers. If a producer supplies it, require the canonical string
+    form of a UUIDv4; malformed/unbounded stream metadata is rejected rather than
+    persisted as a DynamoDB key or silently changed to an unrelated frame id.
+    '''
+    if "CaptureId" not in frame_package:
+        return str(uuid.uuid4())
+    capture_id = frame_package.get("CaptureId")
+    if not isinstance(capture_id, str) or len(capture_id) != 36:
+        raise ValueError("CaptureId must be a canonical UUIDv4 string")
+    try:
+        parsed = uuid.UUID(capture_id)
+    except (ValueError, AttributeError, TypeError):
+        raise ValueError("CaptureId must be a canonical UUIDv4 string")
+    if parsed.version != 4 or str(parsed) != capture_id:
+        raise ValueError("CaptureId must be a canonical UUIDv4 string")
+    return capture_id
+
 def convert_ts(ts, config):
     '''Converts a timestamp to the configured timezone. Returns a localized datetime object.'''
     #lambda_tz = timezone('US/Pacific')
@@ -127,8 +148,10 @@ def process_image(event, context):
                 img_bytes = frame_package["ImageBytes"]
                 approx_capture_ts = frame_package["ApproximateCaptureTime"]
                 frame_count = frame_package["FrameCount"]
+                frame_id = _resolve_frame_id(frame_package)
                 log("frame_decode_success", record_index=record_index,
-                    frame_count=frame_count, image_bytes=len(img_bytes))
+                    frame_count=frame_count, frame_id=frame_id,
+                    image_bytes=len(img_bytes))
             except Exception as e:
                 log("frame_decode_failed", record_index=record_index,
                     error=str(e), traceback=traceback.format_exc())
@@ -136,7 +159,6 @@ def process_image(event, context):
 
             now_ts = time.time()
 
-            frame_id = str(uuid.uuid4())
             processed_timestamp = Decimal(now_ts)
             approx_capture_timestamp = Decimal(approx_capture_ts)
 

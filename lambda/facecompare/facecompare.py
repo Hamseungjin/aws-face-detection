@@ -6,9 +6,10 @@
 """facecompare Lambda.
 
 Compares a face in an uploaded image (sent as base64 in the POST body) against
-the face in the most recent camera frame already stored in S3/DynamoDB, using
-Amazon Rekognition CompareFaces. Exposed via API Gateway: POST /face-compare
-(AWS_PROXY integration).
+one camera frame stored in S3/DynamoDB, using Amazon Rekognition CompareFaces.
+``targetFrameId`` selects that exact frame for citizen-kiosk requests. Omitting
+it retains the global-latest lookup only for the legacy operator workflow.
+Exposed via API Gateway: POST /face-compare (AWS_PROXY integration).
 
 The core logic is ported from scripts/compare_latest_frame_with_id.py (the
 local CLI), adapted for Lambda: config is read from the bundled params file,
@@ -26,6 +27,7 @@ import binascii
 import datetime
 import json
 import time
+import uuid
 
 import boto3
 import botocore.exceptions
@@ -57,7 +59,10 @@ HTTP_STATUS = {
     "NO_LATEST_FRAME": 200,
     "NO_RECENT_FRAME": 200,
     "FRAME_METADATA_INVALID": 200,
+    "TARGET_FRAME_NOT_READY": 200,
+    "TARGET_FRAME_TOO_OLD": 200,
     "BAD_REQUEST": 400,
+    "INVALID_TARGET_FRAME_ID": 400,
     "UNSUPPORTED_IMAGE_FORMAT": 400,
     "IMAGE_TOO_LARGE": 400,
     "INVALID_IMAGE": 400,
@@ -66,6 +71,7 @@ HTTP_STATUS = {
     "ACCESS_DENIED": 500,
     "THROTTLED": 503,
     "AWS_API_ERROR": 502,
+    "SERVICE_ERROR": 500,
 }
 DEFAULT_STATUS = 500
 
@@ -156,6 +162,19 @@ def decode_image(body, config):
     return image_bytes, content_type
 
 
+def validate_target_frame_id(value):
+    """Return a canonical UUIDv4 target id or reject exact-frame mode."""
+    if not isinstance(value, str) or len(value) != 36:
+        raise CompareError("INVALID_TARGET_FRAME_ID")
+    try:
+        parsed = uuid.UUID(value)
+    except (ValueError, AttributeError, TypeError):
+        raise CompareError("INVALID_TARGET_FRAME_ID")
+    if parsed.version != 4 or str(parsed) != value:
+        raise CompareError("INVALID_TARGET_FRAME_ID")
+    return value
+
+
 def _query_month(table, gsi_name, year_month):
     resp = table.query(
         IndexName=gsi_name,
@@ -185,10 +204,23 @@ def query_latest_frame(config):
     return item
 
 
+def get_frame_by_id(config, frame_id):
+    """Strongly read the EnrichedFrame table's frame_id primary key."""
+    table = dynamodb.Table(config["ddb_table"])
+    try:
+        response = table.get_item(
+            Key={"frame_id": frame_id},
+            ConsistentRead=True,
+        )
+    except botocore.exceptions.ClientError as err:
+        raise _aws_client_error(err)
+    return response.get("Item")
+
+
 def compare_faces(image_bytes, target, config):
     """Call Rekognition CompareFaces and return the best similarity (0-100).
 
-    The uploaded image is the SourceImage (Bytes, never persisted); the latest
+    The uploaded image is the SourceImage (Bytes, never persisted); the selected
     frame is the TargetImage (read directly from S3 by Rekognition). The API is
     called with SimilarityThreshold=0.0 so nothing is filtered; the business
     threshold is applied by the caller."""
@@ -240,7 +272,7 @@ def _aws_client_error(err):
 
 
 def build_result(success, matched, similarity, threshold, reason, source, target,
-                 age_seconds, error):
+                 age_seconds, error, target_frame_id=None):
     return {
         "success": success,
         "matched": matched,
@@ -249,6 +281,7 @@ def build_result(success, matched, similarity, threshold, reason, source, target
         "reason": reason,
         "source": source,
         "target": target,
+        "targetFrameId": target_frame_id,
         "age_seconds": age_seconds,
         "error": error,
     }
@@ -273,6 +306,8 @@ def run(event, context=None):
     target = None
     age_seconds = None
     threshold = None
+    exact_mode = False
+    requested_target_frame_id = None
 
     # KPI timers (ms); stay None until the corresponding step runs.
     t_start = time.perf_counter()
@@ -302,24 +337,43 @@ def run(event, context=None):
         body = parse_body(event)
         source["filename"] = body.get("filename")
 
+        # Presence of the field opts into exact mode. Empty/null/malformed values
+        # are errors and must never fall through to the legacy global-latest path.
+        exact_mode = "targetFrameId" in body
+        if exact_mode:
+            requested_target_frame_id = validate_target_frame_id(
+                body.get("targetFrameId")
+            )
+
         _prep_start = time.perf_counter()
         image_bytes, content_type = decode_image(body, config)
         source_image_prepare_ms = round((time.perf_counter() - _prep_start) * 1000.0, 1)
         source["contentType"] = content_type
         source["image_bytes"] = len(image_bytes)  # length ONLY -- never the bytes
 
-        if body.get("similarityThreshold") is not None:
-            threshold = float(body["similarityThreshold"])
-        else:
-            threshold = float(config["similarity_threshold"])
+        try:
+            if body.get("similarityThreshold") is not None:
+                threshold = float(body["similarityThreshold"])
+            else:
+                threshold = float(config["similarity_threshold"])
+        except (TypeError, ValueError):
+            raise CompareError("BAD_REQUEST")
+        if threshold < 0 or threshold > 100:
+            raise CompareError("BAD_REQUEST")
 
         now_epoch = time.time()
         _lookup_start = time.perf_counter()
-        item = query_latest_frame(config)
+        if exact_mode:
+            item = get_frame_by_id(config, requested_target_frame_id)
+        else:
+            # LEGACY OPERATOR COMPATIBILITY ONLY. The citizen kiosk must always
+            # send targetFrameId and must never select a globally latest frame.
+            item = query_latest_frame(config)
         recent_frame_lookup_ms = round((time.perf_counter() - _lookup_start) * 1000.0, 1)
         if item is None:
-            raise CompareError("NO_LATEST_FRAME",
-                               detail="no frame found in current or previous month")
+            if exact_mode:
+                raise CompareError("TARGET_FRAME_NOT_READY")
+            raise CompareError("NO_LATEST_FRAME")
 
         missing = [key for key in ("frame_id", "s3_bucket", "s3_key") if not item.get(key)]
         if missing:
@@ -344,17 +398,26 @@ def run(event, context=None):
         horizon_seconds = float(config["latest_frame_horizon_minutes"]) * 60
         if age_seconds > horizon_seconds:
             raise CompareError(
-                "NO_RECENT_FRAME",
-                detail="latest frame age {}s exceeds horizon {}s".format(
-                    age_seconds, int(horizon_seconds)))
+                "TARGET_FRAME_TOO_OLD" if exact_mode else "NO_RECENT_FRAME")
 
         _compare_start = time.perf_counter()
         similarity = compare_faces(image_bytes, target, config)
         rekognition_compare_faces_ms = round((time.perf_counter() - _compare_start) * 1000.0, 1)
         matched = similarity >= threshold
         reason = "SIMILARITY_ABOVE_THRESHOLD" if matched else "SIMILARITY_BELOW_THRESHOLD"
-        result = build_result(True, matched, round(similarity, 4), threshold, reason,
-                              source, target, age_seconds, None)
+        response_target = target
+        if exact_mode:
+            # The kiosk needs correlation confirmation, not internal AWS locations.
+            response_target = {
+                "frame_id": target["frame_id"],
+                "processed_timestamp": target["processed_timestamp"],
+                "approx_capture_timestamp": target["approx_capture_timestamp"],
+            }
+        result = build_result(
+            True, matched, round(similarity, 4), threshold, reason, source,
+            response_target, age_seconds, None,
+            requested_target_frame_id if exact_mode else target.get("frame_id"),
+        )
         print("facecompare ok: frame_id={} similarity={} matched={}".format(
             target.get("frame_id"), result["similarity"], matched))
         log_kpi(reason)
@@ -363,16 +426,36 @@ def run(event, context=None):
     except CompareError as err:
         print("facecompare fail: reason={} aws_code={}".format(err.reason, err.aws_code))
         log_kpi(err.reason)
-        return build_result(False, False, None, threshold, err.reason, source, target,
-                            age_seconds, {"detail": err.detail, "aws_code": err.aws_code})
+        response_target = target
+        if exact_mode and target:
+            response_target = {
+                "frame_id": target.get("frame_id"),
+                "processed_timestamp": target.get("processed_timestamp"),
+                "approx_capture_timestamp": target.get("approx_capture_timestamp"),
+            }
+        return build_result(
+            False, False, None, threshold, err.reason, source, response_target,
+            age_seconds, {"code": err.reason}, requested_target_frame_id,
+        )
     except botocore.exceptions.NoCredentialsError:
         log_kpi("ACCESS_DENIED")
-        return build_result(False, False, None, threshold, "ACCESS_DENIED", source, target,
-                            age_seconds, {"detail": "no AWS credentials found", "aws_code": None})
+        return build_result(
+            False, False, None, threshold, "ACCESS_DENIED", source, None,
+            age_seconds, {"code": "ACCESS_DENIED"}, requested_target_frame_id,
+        )
     except botocore.exceptions.BotoCoreError as err:
         log_kpi("AWS_API_ERROR")
-        return build_result(False, False, None, threshold, "AWS_API_ERROR", source, target,
-                            age_seconds, {"detail": str(err), "aws_code": None})
+        return build_result(
+            False, False, None, threshold, "AWS_API_ERROR", source, None,
+            age_seconds, {"code": "AWS_API_ERROR"}, requested_target_frame_id,
+        )
+    except Exception:
+        # Never return raw service messages, request ids, or stack traces.
+        log_kpi("SERVICE_ERROR")
+        return build_result(
+            False, False, None, threshold, "SERVICE_ERROR", source, None,
+            age_seconds, {"code": "SERVICE_ERROR"}, requested_target_frame_id,
+        )
 
 
 def handler(event, context):

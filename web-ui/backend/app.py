@@ -5,9 +5,9 @@ WHY a backend (the SPA used to be served by a static http.server):
     via getUserMedia. The browser POSTs JPEG frames here; this backend forwards each
     frame to the Kinesis FrameStream using the EC2 INSTANCE ROLE -- AWS credentials
     never reach the browser.
-  * The Kinesis record is byte-compatible with client/video_cap.py
-    (pickle.dumps({'ApproximateCaptureTime', 'FrameCount', 'ImageBytes'})), so the
-    existing imageprocessor Lambda consumes browser frames unchanged.
+  * The Kinesis record preserves client/video_cap.py's three pickle fields and
+    adds CaptureId for exact browser-frame correlation. Legacy records without
+    CaptureId remain supported by ImageProcessor.
   * Login gate: unauthenticated users get only the login screen; the capture API and
     the API-Gateway config (apiBaseUrl + apiKey) require a valid session.
 
@@ -20,8 +20,10 @@ Run locally (localhost is a secure context, so getUserMedia works over http):
 import base64
 import datetime
 import pickle
+import secrets
 import threading
 import time
+import uuid
 from pathlib import Path
 
 import boto3
@@ -30,11 +32,21 @@ from botocore.exceptions import ClientError
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, StrictStr
 from starlette.middleware.sessions import SessionMiddleware
 
 import auth
 import config
+from kiosk_store import (
+    InvalidKioskInput,
+    KioskStore,
+    LockerNotAvailable,
+    RetrievalAttemptLimiter,
+    RetrievalUnavailable,
+    StoreTransactionUnavailable,
+    validate_retrieval_code,
+    validate_transaction_id,
+)
 
 app = FastAPI(title="Rekognition Video Analyzer - Web UI")
 
@@ -49,6 +61,18 @@ app.add_middleware(
 )
 
 ROOT = Path(__file__).resolve().parent.parent  # web-ui/ -- the static SPA lives here
+
+# One database file is shared by every browser connected to this FastAPI process.
+# KioskStore opens short-lived sqlite3 connections for thread-safe request handling.
+_kiosk_store = KioskStore(
+    config.KIOSK_DB_PATH,
+    reservation_seconds=config.KIOSK_RESERVATION_SECONDS,
+    retrieval_seconds=config.KIOSK_RETRIEVAL_SECONDS,
+)
+_retrieval_limiter = RetrievalAttemptLimiter(
+    max_failures=config.KIOSK_RETRIEVAL_MAX_FAILURES,
+    window_seconds=config.KIOSK_RETRIEVAL_RATE_WINDOW_SECONDS,
+)
 
 # Kinesis client: same timeouts/retries as client/video_cap.py.
 _KINESIS_CONFIG = BotoConfig(
@@ -74,6 +98,46 @@ def require_user(request):
         raise HTTPException(status_code=401, detail="authentication required")
 
 
+def _validated_transaction_id(transaction_id):
+    try:
+        return validate_transaction_id(transaction_id)
+    except InvalidKioskInput as error:
+        raise HTTPException(status_code=400, detail=error.code)
+
+
+def _validated_retrieval_code(retrieval_code):
+    try:
+        return validate_retrieval_code(retrieval_code)
+    except InvalidKioskInput as error:
+        raise HTTPException(status_code=400, detail=error.code)
+
+
+def _retrieval_rate_scope(request):
+    scope = request.session.get("kiosk_rate_scope")
+    if not scope:
+        scope = secrets.token_urlsafe(18)
+        request.session["kiosk_rate_scope"] = scope
+    return "%s:%s" % (_current_user(request), scope)
+
+
+def _run_retrieval_code_lookup(request, operation):
+    scope = _retrieval_rate_scope(request)
+    retry_after = _retrieval_limiter.retry_after(scope)
+    if retry_after:
+        raise HTTPException(
+            status_code=429,
+            detail="RETRIEVAL_RATE_LIMITED",
+            headers={"Retry-After": str(retry_after)},
+        )
+    try:
+        result = operation()
+    except RetrievalUnavailable:
+        _retrieval_limiter.record_failure(scope)
+        raise HTTPException(status_code=409, detail="RETRIEVAL_UNAVAILABLE")
+    _retrieval_limiter.record_success(scope)
+    return result
+
+
 # --- request models --------------------------------------------------------
 class LoginIn(BaseModel):
     username: str
@@ -83,6 +147,18 @@ class LoginIn(BaseModel):
 class FrameIn(BaseModel):
     imageBase64: str
     frameCount: int = 0
+
+
+class LockerReserveIn(BaseModel):
+    lockerId: str
+
+
+class TransactionIn(BaseModel):
+    transactionId: StrictStr
+
+
+class RetrievalStartIn(BaseModel):
+    retrievalCode: StrictStr
 
 
 # --- auth routes -----------------------------------------------------------
@@ -97,6 +173,7 @@ def login(body: LoginIn, request: Request):
     if not ok:
         raise HTTPException(status_code=401, detail="invalid credentials")
     request.session["user"] = body.username
+    request.session["kiosk_rate_scope"] = secrets.token_urlsafe(18)
     return {"ok": True, "user": body.username}
 
 
@@ -112,6 +189,90 @@ def me(request: Request):
     return {"authenticated": bool(user), "user": user}
 
 
+# --- kiosk locker transactions (auth required) -----------------------------
+@app.get("/api/kiosk/lockers")
+def kiosk_lockers(request: Request):
+    require_user(request)
+    return {"lockers": _kiosk_store.list_lockers()}
+
+
+@app.post("/api/kiosk/store/reserve")
+def kiosk_store_reserve(body: LockerReserveIn, request: Request):
+    require_user(request)
+    try:
+        return _kiosk_store.reserve_locker(body.lockerId)
+    except LockerNotAvailable as error:
+        raise HTTPException(status_code=409, detail=error.code)
+
+
+@app.post("/api/kiosk/store/cancel")
+def kiosk_store_cancel(body: TransactionIn, request: Request):
+    require_user(request)
+    transaction_id = _validated_transaction_id(body.transactionId)
+    return {
+        "transactionId": transaction_id,
+        "cancelled": _kiosk_store.cancel_store(transaction_id),
+    }
+
+
+@app.post("/api/kiosk/store/complete")
+def kiosk_store_complete(body: TransactionIn, request: Request):
+    require_user(request)
+    transaction_id = _validated_transaction_id(body.transactionId)
+    try:
+        return _kiosk_store.complete_store(transaction_id, amount=2000)
+    except StoreTransactionUnavailable as error:
+        raise HTTPException(status_code=409, detail=error.code)
+
+
+@app.post("/api/kiosk/retrieve/start")
+def kiosk_retrieve_start(body: RetrievalStartIn, request: Request):
+    require_user(request)
+    retrieval_code = _validated_retrieval_code(body.retrievalCode)
+    return _run_retrieval_code_lookup(
+        request, lambda: _kiosk_store.start_retrieval(retrieval_code)
+    )
+
+
+@app.post("/api/kiosk/retrieve/recover")
+def kiosk_retrieve_recover(body: RetrievalStartIn, request: Request):
+    require_user(request)
+    retrieval_code = _validated_retrieval_code(body.retrievalCode)
+    return _run_retrieval_code_lookup(
+        request, lambda: _kiosk_store.recover_retrieval(retrieval_code)
+    )
+
+
+@app.post("/api/kiosk/retrieve/cancel")
+def kiosk_retrieve_cancel(body: TransactionIn, request: Request):
+    require_user(request)
+    transaction_id = _validated_transaction_id(body.transactionId)
+    return {
+        "transactionId": transaction_id,
+        "cancelled": _kiosk_store.cancel_retrieval(transaction_id),
+    }
+
+
+@app.post("/api/kiosk/retrieve/complete")
+def kiosk_retrieve_complete(body: TransactionIn, request: Request):
+    require_user(request)
+    transaction_id = _validated_transaction_id(body.transactionId)
+    try:
+        return _kiosk_store.complete_retrieval(transaction_id)
+    except RetrievalUnavailable:
+        raise HTTPException(status_code=409, detail="RETRIEVAL_UNAVAILABLE")
+
+
+@app.get("/api/kiosk/transactions/{transaction_id}")
+def kiosk_transaction_status(transaction_id: str, request: Request):
+    require_user(request)
+    transaction_id = _validated_transaction_id(transaction_id)
+    result = _kiosk_store.get_transaction_status(transaction_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="TRANSACTION_NOT_FOUND")
+    return result
+
+
 # --- capture route (auth required) -----------------------------------------
 @app.post("/api/capture-frame")
 def capture_frame(body: FrameIn, request: Request):
@@ -123,11 +284,14 @@ def capture_frame(body: FrameIn, request: Request):
     if not img_bytes:
         raise HTTPException(status_code=400, detail="empty image")
 
-    # EXACT record shape from client/video_cap.py so imageprocessor is unchanged.
+    # Preserve every legacy producer field and add a server-authoritative UUID
+    # used to correlate this one browser capture through the async AWS pipeline.
+    capture_id = str(uuid.uuid4())
     frame_package = {
         "ApproximateCaptureTime": datetime.datetime.now(datetime.timezone.utc).timestamp(),
         "FrameCount": int(body.frameCount),
         "ImageBytes": img_bytes,
+        "CaptureId": capture_id,
     }
     try:
         resp = _kinesis.put_record(
@@ -135,9 +299,17 @@ def capture_frame(body: FrameIn, request: Request):
             Data=pickle.dumps(frame_package),
             PartitionKey=config.KINESIS_PARTITION_KEY,
         )
-    except Exception as e:
-        raise HTTPException(status_code=502, detail="kinesis put failed: %s" % e)
-    return {"ok": True, "sequenceNumber": resp.get("SequenceNumber"), "shardId": resp.get("ShardId")}
+    except Exception:
+        # Do not expose raw AWS messages/request identifiers to the kiosk.
+        raise HTTPException(status_code=502, detail="kinesis put failed")
+    # Success means Kinesis accepted the record; ImageProcessor may not have
+    # written the corresponding S3/DynamoDB frame yet.
+    return {
+        "ok": True,
+        "captureId": capture_id,
+        "sequenceNumber": resp.get("SequenceNumber"),
+        "shardId": resp.get("ShardId"),
+    }
 
 
 # --- API Gateway config for the frame viewer (auth required) ---------------
@@ -258,6 +430,11 @@ _ROOT_ASSETS = {
 @app.get("/")
 def index():
     return FileResponse(str(ROOT / "index.html"))
+
+
+@app.get("/kiosk")
+def kiosk():
+    return FileResponse(str(ROOT / "kiosk.html"))
 
 
 @app.get("/{asset}")

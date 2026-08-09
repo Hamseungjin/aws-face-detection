@@ -1,5 +1,7 @@
 ## 1. 이 프로젝트의 목적
 
+실행·배포·검증·종료 순서는 **[RUNBOOK.md](RUNBOOK.md)**를 먼저 참고하세요.
+
 이 프로젝트는 **실시간 카메라 영상 프레임을 AWS에서 분석하고, 특정 객체가 감지되면 알림을 보내는 서버리스 영상 분석 파이프라인**입니다.
 
 전체 흐름은 다음과 같습니다.
@@ -261,6 +263,22 @@ pynt ec2ip               # public IP 확인 → 브라우저 접속
 > 고정 IP(EIP 2개)는 접속 편의성을 위한 선택으로 **월 약 +$7**가 추가됩니다.
 > 검증 후 필요 시 수동 stop, 사용 종료 시 `pynt deleteec2stack`(EIP도 함께 release).
 
+### 시민용 키오스크
+
+기존 운영자 대시보드(`/`)와 별도로 시민용 보관/찾기 화면을 `/kiosk`에서 제공합니다.
+같은 FastAPI 서버에 접속한 키오스크는 SQLite를 통해 보관함 예약과 거래 상태를 공유합니다.
+결제와 물리 보관함 열림은 데모 처리이며, 얼굴 비교는 실제 `/face-compare` 연동을 사용합니다.
+시민 키오스크는 FastAPI가 발급한 UUIDv4 `captureId`를 AWS 파이프라인의 `frame_id` 및
+`/face-compare`의 `targetFrameId`로 전달하여 정확히 자신이 촬영한 프레임만 비교합니다.
+`targetFrameId`가 없는 전역 최신 프레임 비교는 기존 운영자 화면을 위한 legacy 호환 모드입니다.
+
+```text
+http://<WEB_UI_EIP>:8080/kiosk
+```
+
+화면 흐름, 환경 변수, API, 상태 전이, 현재 신원 확인 한계와 테스트 방법은
+**[docs/KIOSK_UI.md](docs/KIOSK_UI.md)** 참고.
+
 ## 한 줄 요약
 
 이 마크다운은 **카메라 영상을 AWS Kinesis, Lambda, Rekognition, S3, DynamoDB, SNS, API Gateway로 연결해 실시간 객체 감지, 알림, 웹 UI 모니터링을 구현하는 서버리스 영상 분석 프로젝트 가이드**입니다.
@@ -272,7 +290,7 @@ pynt ec2ip               # public IP 확인 → 브라우저 접속
 ### 기능 동작 방식
 
 1. 웹 UI에서 운영자가 최대 5MiB 크기의 JPEG 또는 PNG 신분증 이미지를 선택합니다.
-2. 브라우저는 로컬 미리보기를 표시하고, 이미지 바이트를 base64로 인코딩해 `POST /face-verify`로 전송합니다.
+2. 브라우저는 로컬 미리보기를 표시하고, 이미지 바이트를 base64로 인코딩해 `POST /face-compare`로 전송합니다.
 3. Face Verifier Lambda는 업로드된 신분증 이미지에 대해 Amazon Rekognition `DetectFaces`를 호출하여 얼굴 존재 여부를 확인하고, 선택된 얼굴의 경계 상자, 신뢰도, 품질, 자세 정보를 반환합니다.
 4. Lambda는 `processed_year_month-processed_timestamp-index` GSI를 통해 `EnrichedFrame` DynamoDB 테이블에서 현재 월 또는 이전 월의 최신 프레임을 조회합니다.
 5. 최신 프레임이 설정된 최신성 허용 시간 안에 있으면 Lambda는 업로드 이미지를 `SourceImage`, 최신 S3 프레임을 `TargetImage`로 사용해 Rekognition `CompareFaces`를 호출합니다.
@@ -333,7 +351,7 @@ CloudFormation 템플릿은 Face Verifier Lambda에 다음 권한을 부여합�
 배포된 API에는 다음 엔드포인트가 추가됩니다.
 
 ```http
-POST /face-verify
+POST /face-compare
 ```
 
 요청 예시는 다음과 같습니다.
@@ -400,7 +418,7 @@ POST /face-verify
 
 ### 웹 UI 엔드포인트 설정
 
-기존 `python build.py webui` 작업은 빌드 결과물의 `web-ui/src/apigw.js`에 `apiBaseUrl`과 `apiKey`를 기록합니다. 얼굴 검증 UI는 동일한 Axios 인스턴스를 사용하며, 해당 기본 URL을 기준으로 `face-verify`를 호출합니다. 따라서 CloudFormation 업데이트 후에는 별도의 엔드포인트 설정이 필요하지 않습니다.
+기존 `python build.py webui` 작업은 빌드 결과물의 `web-ui/src/apigw.js`에 `apiBaseUrl`과 `apiKey`를 기록합니다. 얼굴 검증 UI는 동일한 Axios 인스턴스를 사용하며, 해당 기본 URL을 기준으로 `face-compare`를 호출합니다. 따라서 CloudFormation 업데이트 후에는 별도의 엔드포인트 설정이 필요하지 않습니다.
 
 ### 로컬 및 배포 환경 테스트
 

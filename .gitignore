@@ -37,6 +37,7 @@ lambda/imageprocessor/pytz*
 # web-ui FastAPI backend: local secrets + venv + caches (never commit/upload)
 web-ui/backend/.env
 web-ui/backend/.venv/
+web-ui/backend/data/
 **/__pycache__/
 *.pyc
 

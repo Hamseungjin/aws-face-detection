@@ -6,6 +6,7 @@ Store), and locally from web-ui/backend/.env (loaded below). NO secrets are
 hardcoded here.
 """
 import os
+from pathlib import Path
 
 # Local dev convenience: load web-ui/backend/.env into the environment if present.
 #   override=False  -> the EC2 systemd EnvironmentFile (/etc/webui.env) ALWAYS wins
@@ -56,3 +57,18 @@ DATA_API_KEY_LOGICAL_ID = os.getenv("DATA_API_KEY_LOGICAL_ID", "VidAnalyzerApiKe
 # runtime. FunctionName is hardcoded in the data stack (aws-infra-cfn.yaml), so the
 # physical name is deterministic -- no CloudFormation lookup needed.
 IMAGEPROCESSOR_FUNCTION_NAME = os.getenv("IMAGEPROCESSOR_FUNCTION_NAME", "imageprocessor")
+
+# Single-host kiosk transaction storage. The default is intentionally local to
+# this application; deployments can point KIOSK_DB_PATH at a persistent volume.
+_BACKEND_DIR = Path(__file__).resolve().parent
+KIOSK_DB_PATH = os.getenv(
+    "KIOSK_DB_PATH", str(_BACKEND_DIR / "data" / "kiosk.sqlite3")
+)
+KIOSK_RESERVATION_SECONDS = int(os.getenv("KIOSK_RESERVATION_SECONDS", "120"))
+KIOSK_RETRIEVAL_SECONDS = int(os.getenv("KIOSK_RETRIEVAL_SECONDS", "120"))
+KIOSK_RETRIEVAL_MAX_FAILURES = int(
+    os.getenv("KIOSK_RETRIEVAL_MAX_FAILURES", "5")
+)
+KIOSK_RETRIEVAL_RATE_WINDOW_SECONDS = int(
+    os.getenv("KIOSK_RETRIEVAL_RATE_WINDOW_SECONDS", "60")
+)
