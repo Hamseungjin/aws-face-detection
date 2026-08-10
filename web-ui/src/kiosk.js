@@ -50,8 +50,16 @@
   var IDLE_TIMEOUT_MS = 60000;
   var MAX_VERIFICATION_ATTEMPTS = 3;
 
+  // Under code-server subpath proxy (e.g. /proxy/8080/), prefix API calls so the
+  // browser hits /proxy/<port>/api/... instead of /api/... on the outer host.
+  function getApiBaseUrl(pathname) {
+    var path = pathname || (typeof window !== 'undefined' && window.location && window.location.pathname) || '';
+    var match = String(path).match(/^(\/proxy\/\d+)/);
+    return (match ? match[1] : '') + '/api';
+  }
+
   var apiClient = axios.create({
-    baseURL: '/api',
+    baseURL: getApiBaseUrl(),
     withCredentials: true,
     timeout: 20000
   });
@@ -185,7 +193,8 @@
   if (window.__KIOSK_TEST_MODE__) {
     window.__KIOSK_TEST_HOOKS__ = {
       PipelineService: PipelineService,
-      isCompletedVerificationOutcome: isCompletedVerificationOutcome
+      isCompletedVerificationOutcome: isCompletedVerificationOutcome,
+      getApiBaseUrl: getApiBaseUrl
     };
   }
 
@@ -836,8 +845,8 @@
       },
       cancelActiveTransaction: function (useBeacon) {
         if (!this.transactionId || !this.activeTransactionKind) { return Promise.resolve(); }
-        var endpoint = this.activeTransactionKind === 'STORE_RESERVED' ?
-          '/api/kiosk/store/cancel' : '/api/kiosk/retrieve/cancel';
+        var endpoint = getApiBaseUrl() + (this.activeTransactionKind === 'STORE_RESERVED' ?
+          '/kiosk/store/cancel' : '/kiosk/retrieve/cancel');
         var payload = { transactionId: this.transactionId };
         if (useBeacon && navigator.sendBeacon) {
           var body = new Blob([JSON.stringify(payload)], { type: 'application/json' });

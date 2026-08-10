@@ -3,8 +3,15 @@
 
 // Same-origin client for THIS backend (login/logout/me/capture-frame/config).
 // withCredentials so the HttpOnly session cookie is sent.
+// Under code-server subpath proxy (e.g. /proxy/8080/), prefix API calls so the
+// browser hits /proxy/<port>/api/... instead of /api/... on the outer host.
+function getApiBaseUrl(pathname) {
+  var path = pathname || (typeof window !== 'undefined' && window.location && window.location.pathname) || '';
+  var match = String(path).match(/^(\/proxy\/\d+)/);
+  return (match ? match[1] : '') + '/api';
+}
 var apiAxios = axios.create({
-  baseURL: '/api',
+  baseURL: getApiBaseUrl(),
   withCredentials: true,
   timeout: 20000,
 });
