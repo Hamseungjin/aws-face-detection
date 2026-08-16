@@ -1,0 +1,20 @@
+[Unit]
+Description=Rekognition Video Analyzer KPI Dashboard (FastAPI/uvicorn, loopback only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kpi
+Group=kpi
+WorkingDirectory=/opt/kpi/backend
+EnvironmentFile=/etc/kpi-dashboard.env
+# Loopback only — public access is via Nginx /dashboard/ on :443.
+ExecStart=/opt/kpi/venv/bin/uvicorn app:app --host 127.0.0.1 --port ${KPI_PORT}
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

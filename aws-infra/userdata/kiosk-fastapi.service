@@ -1,0 +1,24 @@
+[Unit]
+Description=Kiosk/Operator FastAPI (loopback only; TLS at Nginx)
+Documentation=https://github.com/
+After=network-online.target
+Wants=network-online.target
+# Fail closed: do not start until /data/kiosk is a mounted filesystem.
+RequiresMountsFor=/data/kiosk
+
+[Service]
+Type=simple
+User=webui
+Group=webui
+WorkingDirectory=/opt/webui/backend
+EnvironmentFile=/etc/webui.env
+# Loopback only — never bind 0.0.0.0. Nginx terminates TLS on :443.
+ExecStart=/opt/webui/venv/bin/uvicorn app:app --host 127.0.0.1 --port ${WEBUI_PORT}
+Restart=always
+RestartSec=3
+# Hardening (demo-safe): no new privileges; private tmp.
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

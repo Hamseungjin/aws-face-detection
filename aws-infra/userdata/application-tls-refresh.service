@@ -1,0 +1,19 @@
+[Unit]
+Description=Refresh Nginx self-signed TLS SAN for current public IPv4 (EIP race fix)
+Documentation=file:/opt/app/application-tls-refresh.sh
+# After network is up. Prefer after nginx if present, but do not hard-fail if nginx unit lags.
+After=network-online.target nginx.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Remain after success so systemd can report last result; still safe on every boot.
+RemainAfterExit=yes
+ExecStart=/opt/app/application-tls-refresh.sh
+# Environment overrides optional:
+# Environment=TLS_REFRESH_MAX_ATTEMPTS=10
+# Environment=TLS_REFRESH_SLEEP_SECS=30
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

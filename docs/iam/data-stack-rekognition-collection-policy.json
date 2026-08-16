@@ -1,0 +1,19 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ManageKioskFaceCollectionInDataStack",
+      "Effect": "Allow",
+      "Action": [
+        "rekognition:CreateCollection",
+        "rekognition:DeleteCollection",
+        "rekognition:DescribeCollection",
+        "rekognition:ListCollections"
+      ],
+      "Resource": [
+        "arn:aws:rekognition:ap-northeast-2:115019372648:collection/kiosk-face-collection",
+        "arn:aws:rekognition:ap-northeast-2:115019372648:collection/*"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,271 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ResolveAmazonLinux2023PublicAmiParameter",
+      "Effect": "Allow",
+      "Action": "ssm:GetParameters",
+      "Resource": "arn:aws:ssm:ap-northeast-2::parameter/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
+    },
+    {
+      "Sid": "ReadEc2StateForCloudFormationHandlers",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DescribeAccountAttributes",
+        "ec2:DescribeAddresses",
+        "ec2:DescribeAvailabilityZones",
+        "ec2:DescribeIamInstanceProfileAssociations",
+        "ec2:DescribeImages",
+        "ec2:DescribeInstanceAttribute",
+        "ec2:DescribeInstances",
+        "ec2:DescribeInstanceStatus",
+        "ec2:DescribeInstanceTypes",
+        "ec2:DescribeNetworkInterfaces",
+        "ec2:DescribeSecurityGroups",
+        "ec2:DescribeSecurityGroupRules",
+        "ec2:DescribeSnapshots",
+        "ec2:DescribeSubnets",
+        "ec2:DescribeTags",
+        "ec2:DescribeVolumes",
+        "ec2:DescribeVolumesModifications",
+        "ec2:DescribeVpcs",
+        "ec2:GetSecurityGroupsForVpc"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-northeast-2"
+        }
+      }
+    },
+    {
+      "Sid": "RunOneDemoClassInstanceInConfirmedSubnet",
+      "Effect": "Allow",
+      "Action": "ec2:RunInstances",
+      "Resource": [
+        "arn:aws:ec2:ap-northeast-2::image/ami-*",
+        "arn:aws:ec2:ap-northeast-2:115019372648:instance/*",
+        "arn:aws:ec2:ap-northeast-2:115019372648:network-interface/*",
+        "arn:aws:ec2:ap-northeast-2:115019372648:security-group/*",
+        "arn:aws:ec2:ap-northeast-2:115019372648:subnet/subnet-06563af7aa7d98464",
+        "arn:aws:ec2:ap-northeast-2:115019372648:volume/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-northeast-2",
+          "ec2:InstanceType": "t3.small"
+        }
+      }
+    },
+    {
+      "Sid": "CreateApplicationSecurityGroupInCandidateVpc",
+      "Effect": "Allow",
+      "Action": "ec2:CreateSecurityGroup",
+      "Resource": [
+        "arn:aws:ec2:ap-northeast-2:115019372648:security-group/*",
+        "arn:aws:ec2:ap-northeast-2:115019372648:vpc/vpc-05311e6f3180243c0"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-northeast-2"
+        }
+      }
+    },
+    {
+      "Sid": "CreateEncryptedApplicationDataVolumeInCandidateAz",
+      "Effect": "Allow",
+      "Action": "ec2:CreateVolume",
+      "Resource": "arn:aws:ec2:ap-northeast-2:115019372648:volume/*",
+      "Condition": {
+        "Bool": {
+          "ec2:Encrypted": "true"
+        },
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-northeast-2",
+          "ec2:AvailabilityZone": "ap-northeast-2c"
+        }
+      }
+    },
+    {
+      "Sid": "AllocateOneVpcElasticIp",
+      "Effect": "Allow",
+      "Action": "ec2:AllocateAddress",
+      "Resource": "arn:aws:ec2:ap-northeast-2:115019372648:elastic-ip/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-northeast-2"
+        }
+      }
+    },
+    {
+      "Sid": "TagApplicationEc2Resources",
+      "Effect": "Allow",
+      "Action": "ec2:CreateTags",
+      "Resource": [
+        "arn:aws:ec2:ap-northeast-2:115019372648:elastic-ip/*",
+        "arn:aws:ec2:ap-northeast-2:115019372648:instance/*",
+        "arn:aws:ec2:ap-northeast-2:115019372648:network-interface/*",
+        "arn:aws:ec2:ap-northeast-2:115019372648:security-group/*",
+        "arn:aws:ec2:ap-northeast-2:115019372648:volume/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-northeast-2"
+        }
+      }
+    },
+    {
+      "Sid": "RemoveTagsFromStackResources",
+      "Effect": "Allow",
+      "Action": "ec2:DeleteTags",
+      "Resource": [
+        "arn:aws:ec2:ap-northeast-2:115019372648:elastic-ip/*",
+        "arn:aws:ec2:ap-northeast-2:115019372648:instance/*",
+        "arn:aws:ec2:ap-northeast-2:115019372648:network-interface/*",
+        "arn:aws:ec2:ap-northeast-2:115019372648:security-group/*",
+        "arn:aws:ec2:ap-northeast-2:115019372648:volume/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-northeast-2",
+          "aws:ResourceTag/aws:cloudformation:stack-name": "video-analyzer-ec2-stack"
+        }
+      }
+    },
+    {
+      "Sid": "ManageStackTaggedInstance",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:ModifyInstanceAttribute",
+        "ec2:TerminateInstances"
+      ],
+      "Resource": "arn:aws:ec2:ap-northeast-2:115019372648:instance/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-northeast-2",
+          "aws:ResourceTag/aws:cloudformation:stack-name": "video-analyzer-ec2-stack"
+        }
+      }
+    },
+    {
+      "Sid": "ManageStackTaggedSecurityGroup",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:AuthorizeSecurityGroupIngress",
+        "ec2:DeleteSecurityGroup",
+        "ec2:RevokeSecurityGroupIngress"
+      ],
+      "Resource": "arn:aws:ec2:ap-northeast-2:115019372648:security-group/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-northeast-2",
+          "aws:ResourceTag/aws:cloudformation:stack-name": "video-analyzer-ec2-stack"
+        }
+      }
+    },
+    {
+      "Sid": "ManageStackTaggedVolumes",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:AttachVolume",
+        "ec2:DeleteVolume",
+        "ec2:DetachVolume",
+        "ec2:ModifyVolume"
+      ],
+      "Resource": [
+        "arn:aws:ec2:ap-northeast-2:115019372648:instance/*",
+        "arn:aws:ec2:ap-northeast-2:115019372648:volume/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-northeast-2",
+          "aws:ResourceTag/aws:cloudformation:stack-name": "video-analyzer-ec2-stack"
+        }
+      }
+    },
+    {
+      "Sid": "ManageApplicationElasticIpAssociation",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:AssociateAddress",
+        "ec2:DisassociateAddress"
+      ],
+      "Resource": [
+        "arn:aws:ec2:ap-northeast-2:115019372648:elastic-ip/*",
+        "arn:aws:ec2:ap-northeast-2:115019372648:instance/*",
+        "arn:aws:ec2:ap-northeast-2:115019372648:network-interface/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-northeast-2"
+        }
+      }
+    },
+    {
+      "Sid": "ReleaseStackTaggedElasticIp",
+      "Effect": "Allow",
+      "Action": "ec2:ReleaseAddress",
+      "Resource": "arn:aws:ec2:ap-northeast-2:115019372648:elastic-ip/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-northeast-2",
+          "aws:ResourceTag/aws:cloudformation:stack-name": "video-analyzer-ec2-stack"
+        }
+      }
+    },
+    {
+      "Sid": "ManageApplicationRuntimeRole",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateRole",
+        "iam:DeleteRole",
+        "iam:DeleteRolePolicy",
+        "iam:GetRole",
+        "iam:GetRolePolicy",
+        "iam:ListAttachedRolePolicies",
+        "iam:ListInstanceProfilesForRole",
+        "iam:ListRolePolicies",
+        "iam:ListRoleTags",
+        "iam:PutRolePolicy",
+        "iam:TagRole",
+        "iam:UntagRole",
+        "iam:UpdateAssumeRolePolicy"
+      ],
+      "Resource": "arn:aws:iam::115019372648:role/video-analyzer-ec2-stack-ApplicationInstanceRole-*"
+    },
+    {
+      "Sid": "AttachOnlySsmCoreManagedPolicy",
+      "Effect": "Allow",
+      "Action": [
+        "iam:AttachRolePolicy",
+        "iam:DetachRolePolicy"
+      ],
+      "Resource": "arn:aws:iam::115019372648:role/video-analyzer-ec2-stack-ApplicationInstanceRole-*",
+      "Condition": {
+        "ArnEquals": {
+          "iam:PolicyARN": "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+        }
+      }
+    },
+    {
+      "Sid": "ManageApplicationInstanceProfile",
+      "Effect": "Allow",
+      "Action": [
+        "iam:AddRoleToInstanceProfile",
+        "iam:CreateInstanceProfile",
+        "iam:DeleteInstanceProfile",
+        "iam:GetInstanceProfile",
+        "iam:RemoveRoleFromInstanceProfile",
+        "iam:TagInstanceProfile",
+        "iam:UntagInstanceProfile"
+      ],
+      "Resource": "arn:aws:iam::115019372648:instance-profile/video-analyzer-ec2-stack-ApplicationInstanceProfile-*"
+    },
+    {
+      "Sid": "PassOnlyGeneratedApplicationRuntimeRole",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "arn:aws:iam::115019372648:role/video-analyzer-ec2-stack-ApplicationInstanceRole-*"
+    }
+  ]
+}

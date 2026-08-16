@@ -118,7 +118,8 @@
         </label>
         <div class="button-stack">
           <button class="primary-button" type="button" v-on:click="continueFromConsent" v-bind:disabled="!consentGiven">동의하고 계속</button>
-          <button class="secondary-button" type="button" v-on:click="resetKiosk">취소 / 처음으로</button>
+          <button class="secondary-button" type="button" v-on:click="returnToLockerSelectFromConsent">보관함 다시 선택</button>
+          <button class="text-button" type="button" v-on:click="resetKiosk">취소 / 처음으로</button>
         </div>
       </section>
 
@@ -129,7 +130,7 @@
         <p class="lead compact">실제 모바일 신분증·신분증 리더 대신 JPG 또는 PNG 파일을 사용합니다. 최대 5MiB</p>
 
         <label class="file-picker" for="id-file">
-          <input id="id-file" type="file" accept="image/jpeg,image/png" v-on:change="handleIdFile">
+          <input id="id-file" type="file" accept="image/jpeg,image/png,.jpg,.jpeg,.png" v-on:change="handleIdFile">
           <span class="upload-icon" aria-hidden="true">↑</span>
           <strong>{{ idImage ? '다른 사진 선택' : '사진 선택' }}</strong>
           <small>JPG · JPEG · PNG</small>
@@ -173,53 +174,63 @@
         <div class="status-animation"><span></span><span></span><span></span></div>
         <p class="step-kicker">촬영 확인 중</p>
         <h1>촬영한 얼굴을<br>안전하게 확인하고 있습니다</h1>
-        <p class="lead">잠시만 기다려 주세요. 최대 15초 정도 걸릴 수 있습니다.</p>
+        <p class="lead">잠시만 기다려 주세요. 본인 확인을 진행하고 있습니다.</p>
         <button class="secondary-button inline-button" type="button" v-on:click="cancelToFaceCapture">다시 촬영</button>
       </section>
 
       <section v-else-if="state === 'VERIFYING'" class="screen status-screen" aria-live="polite">
         <div v-if="!verificationPassed" class="verification-ring"><span aria-hidden="true">●</span></div>
         <div v-else class="success-check" aria-hidden="true">✓</div>
-        <p class="step-kicker">본인 인증</p>
-        <h1>{{ verificationPassed ? '본인 인증이 완료되었습니다.' : '본인 여부를 확인하고 있습니다' }}</h1>
-        <p class="lead">{{ verificationPassed ? '이제 보관함을 선택해 주세요.' : '화면을 벗어나지 말고 잠시만 기다려 주세요.' }}</p>
+        <p class="step-kicker">{{ selectedMode === 'RETRIEVE' ? '본인 확인 중' : '본인 인증' }}</p>
+        <h1>{{ verificationPassed
+          ? (selectedMode === 'RETRIEVE' ? '본인 확인이 완료되었습니다.' : '본인 인증이 완료되었습니다.')
+          : (selectedMode === 'RETRIEVE' ? '등록된 얼굴과 비교하고 있습니다' : '본인 여부를 확인하고 있습니다') }}</h1>
+        <p class="lead">{{ verificationPassed
+          ? (selectedMode === 'RETRIEVE' ? '보관함을 엽니다.' : '이제 보관함을 선택해 주세요.')
+          : '화면을 벗어나지 말고 잠시만 기다려 주세요.' }}</p>
       </section>
 
       <section v-else-if="state === 'FACE_RETRY'" class="screen narrow-screen" aria-labelledby="retry-title">
         <div class="retry-icon" aria-hidden="true">!</div>
         <p class="step-kicker">다시 촬영해 주세요</p>
-        <h1 id="retry-title">본인 확인을 완료하지 못했습니다</h1>
+        <h1 id="retry-title">{{ lastFailureKind === 'quality' ? '촬영을 다시 해 주세요' : '본인 확인을 완료하지 못했습니다' }}</h1>
         <p class="lead">{{ verificationMessage }}</p>
-        <p class="attempt-count">인증 시도 {{ verificationAttempts }} / 3</p>
+        <p v-if="lastFailureKind === 'quality'" class="attempt-count">이번 촬영은 인증 실패로 세지 않습니다. 안내대로 다시 촬영해 주세요.</p>
+        <p v-else-if="lastFailureKind === 'id'" class="attempt-count">신분증 사진을 다시 선택해 주세요. 이번 오류는 인증 실패로 세지 않습니다.</p>
+        <p v-else class="attempt-count">인증 시도 {{ verificationAttempts }} / 3</p>
         <div class="tip-card">
           <strong>촬영 도움말</strong>
           <p>얼굴 전체가 보이도록 정면을 바라보고 주변을 밝게 해 주세요.</p>
         </div>
         <div class="button-stack">
-          <button class="primary-button" type="button" v-on:click="go('FACE_CAPTURE')">얼굴 다시 촬영</button>
+          <button v-if="lastFailureKind === 'id'" class="primary-button" type="button" v-on:click="retryIdCapture">신분증 다시 선택</button>
+          <button v-else class="primary-button" type="button" v-on:click="go('FACE_CAPTURE')">얼굴 다시 촬영</button>
           <button class="secondary-button" type="button" v-on:click="requestHelp">도움 요청</button>
           <button class="text-button" type="button" v-on:click="resetKiosk">처음으로</button>
         </div>
       </section>
 
       <section v-else-if="state === 'LOCKER_SELECT'" class="screen locker-screen" aria-labelledby="locker-title">
-        <div class="verified-banner"><span aria-hidden="true">✓</span> 본인 인증이 완료되었습니다.</div>
         <p class="step-kicker">보관함 선택</p>
-        <h1 id="locker-title">이용할 보관함을 선택해 주세요</h1>
+        <h1 id="locker-title">물품을 보관할 사물함을 선택해주세요.</h1>
         <div class="locker-legend" aria-label="보관함 상태 안내">
-          <span><i class="available"></i>사용 가능</span><span><i class="reserved"></i>예약 중</span><span><i class="occupied"></i>사용 중</span><span><i class="disabled"></i>점검 중</span>
+          <span><i class="available"></i>사용 가능</span><span><i class="reserved"></i>예약 중</span><span><i class="occupied"></i>사용 중</span><span><i class="disabled"></i>선택 불가</span>
         </div>
         <div class="locker-grid">
           <button v-for="locker in lockers" v-bind:key="locker.lockerId" type="button" class="locker-button"
                   v-bind:class="[locker.status.toLowerCase(), {selected: selectedLocker && selectedLocker.lockerId === locker.lockerId}]"
                   v-bind:disabled="locker.status !== 'AVAILABLE'" v-on:click="selectLocker(locker)"
                   v-bind:aria-label="lockerAriaLabel(locker)">
-            <strong>{{ locker.lockerId }}</strong><small>{{ lockerStatusText(locker.status) }}</small>
+            <strong>{{ locker.lockerId }}</strong><small>{{ locker.status === 'AVAILABLE' ? '사용 가능' : lockerStatusText(locker.status) }}</small>
           </button>
         </div>
         <p v-if="selectedLocker" class="selection-summary"><strong>{{ selectedLocker.lockerId }}번</strong> 보관함을 선택했습니다.</p>
         <p v-if="lockerError" class="error-message" role="alert">{{ lockerError }}</p>
-        <button class="primary-button" type="button" v-on:click="reserveSelectedLocker" v-bind:disabled="!selectedLocker">선택 완료</button>
+        <div class="button-stack">
+          <button class="primary-button" type="button" v-on:click="reserveSelectedLocker" v-bind:disabled="!selectedLocker">선택 완료</button>
+          <button class="secondary-button" type="button" v-on:click="loadLockers">새로고침</button>
+          <button class="text-button" type="button" v-on:click="returnToModeSelect">이전으로</button>
+        </div>
       </section>
 
       <section v-else-if="state === 'LOCKER_RESERVING'" class="screen status-screen" aria-live="polite">
@@ -256,17 +267,17 @@
       </section>
 
       <section v-else-if="state === 'RETRIEVAL_CODE'" class="screen narrow-screen" aria-labelledby="retrieval-code-title">
-        <p class="step-kicker">보관번호 확인</p>
+        <p class="step-kicker">8자리 보관 코드 입력</p>
         <h1 id="retrieval-code-title">보관번호를 입력해 주세요</h1>
-        <p class="lead compact">물품을 보관할 때 발급된 8자리 숫자를 입력해 주세요.</p>
+        <p class="lead compact">물품을 보관할 때 발급된 8자리 숫자를 입력한 뒤 얼굴 확인을 진행합니다.</p>
         <label class="retrieval-code-label" for="retrieval-code">보관번호</label>
         <input id="retrieval-code" class="retrieval-code-input" type="text" inputmode="numeric" autocomplete="off"
                maxlength="8" v-model="retrievalCodeInput" v-on:input="normalizeRetrievalCode" placeholder="00000000">
-        <p class="identity-limit-note">본인 인증은 현재 제시한 신분증 사진과 얼굴의 일치만 확인합니다. 이 데모에서는 보관번호로 보관 거래를 찾습니다.</p>
+        <p class="identity-limit-note">보관번호가 확인된 뒤에만 카메라를 켭니다. 보관 시 등록한 얼굴과 현재 얼굴을 비교하며 신분증을 다시 촬영할 필요는 없습니다.</p>
         <p v-if="retrievalError" class="error-message" role="alert">{{ retrievalError }}</p>
         <div class="button-stack">
-          <button class="primary-button" type="button" v-on:click="startRetrieval" v-bind:disabled="retrievalBusy || retrievalCodeInput.length !== 8">
-            {{ retrievalBusy ? '보관 정보 확인 중...' : '보관 정보 확인' }}
+          <button class="primary-button" type="button" v-on:click="continueFromRetrievalCode" v-bind:disabled="retrievalBusy || retrievalCodeInput.length !== 8">
+            얼굴 촬영으로 이동
           </button>
           <button class="secondary-button" type="button" v-on:click="resetKiosk" v-bind:disabled="retrievalBusy">취소 / 처음으로</button>
         </div>

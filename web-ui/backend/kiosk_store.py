@@ -58,6 +58,15 @@ def validate_transaction_id(transaction_id):
     return transaction_id
 
 
+def stored_auth_mode(stored):
+    """Return 'collection' or None. Legacy S3 auth is gone."""
+    if not stored:
+        return None
+    if stored.get("rekognition_face_id") and not stored.get("face_deleted_at"):
+        return "collection"
+    return None
+
+
 def validate_retrieval_code(retrieval_code):
     if (
         not isinstance(retrieval_code, str)
@@ -179,14 +188,27 @@ class KioskStore:
                     retrieval_started_at TEXT,
                     retrieved_at TEXT,
                     reservation_expires_at TEXT,
+                    reference_frame_id TEXT,
+                    reference_face_s3_key TEXT,
+                    reference_face_created_at TEXT,
+                    reference_face_deleted_at TEXT,
+                    rekognition_collection_id TEXT,
+                    rekognition_face_id TEXT,
+                    face_indexed_at TEXT,
+                    face_deleted_at TEXT,
                     FOREIGN KEY (locker_id) REFERENCES lockers(locker_id)
                 );
 
                 CREATE UNIQUE INDEX IF NOT EXISTS one_active_transaction_per_locker
                 ON transactions(locker_id)
                 WHERE status IN ('RESERVED', 'STORED', 'RETRIEVING');
+
+                -- Keep 8-digit code lookups for STORED retrieval efficient.
+                CREATE INDEX IF NOT EXISTS idx_transactions_retrieval_code_status
+                ON transactions(retrieval_code, status);
                 """
             )
+            self._migrate_transaction_columns(connection)
             now = _iso(self.clock())
             connection.execute("BEGIN IMMEDIATE")
             try:
@@ -202,6 +224,43 @@ class KioskStore:
             except Exception:
                 connection.rollback()
                 raise
+
+    def _migrate_transaction_columns(self, connection):
+        """Add reference-face columns to existing databases without recreating tables.
+
+        PHASE 1: reference_frame_id / reference_face_s3_key /
+        reference_face_created_at / reference_face_deleted_at are
+        DEPRECATED / UNUSED for new STORE writes. They stay nullable so
+        existing SQLite files do not need a destructive DROP COLUMN.
+        PHASE 2 (later): drop them after every environment has zero
+        FaceId-less STORED rows and runtime no longer reads them.
+        """
+        existing = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(transactions)").fetchall()
+        }
+        additions = (
+            ("reference_frame_id", "TEXT"),
+            ("reference_face_s3_key", "TEXT"),
+            ("reference_face_created_at", "TEXT"),
+            ("reference_face_deleted_at", "TEXT"),
+            ("rekognition_collection_id", "TEXT"),
+            ("rekognition_face_id", "TEXT"),
+            ("face_indexed_at", "TEXT"),
+            ("face_deleted_at", "TEXT"),
+        )
+        for column_name, column_type in additions:
+            if column_name not in existing:
+                connection.execute(
+                    "ALTER TABLE transactions ADD COLUMN %s %s"
+                    % (column_name, column_type)
+                )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_transactions_retrieval_code_status
+            ON transactions(retrieval_code, status)
+            """
+        )
 
     def _release_expired(self, connection, now):
         now_text = _iso(now)
@@ -406,8 +465,26 @@ class KioskStore:
     def _new_mock_payment_id(self):
         return "PAY-" + secrets.token_hex(3).upper()
 
-    def complete_store(self, transaction_id, amount=2000):
+    def complete_store(
+        self,
+        transaction_id,
+        amount=2000,
+        rekognition_collection_id=None,
+        rekognition_face_id=None,
+    ):
         validate_transaction_id(transaction_id)
+        if rekognition_collection_id is not None:
+            if (
+                not isinstance(rekognition_collection_id, str)
+                or not (1 <= len(rekognition_collection_id) <= 255)
+            ):
+                raise InvalidKioskInput("INVALID_COLLECTION_ID")
+        if rekognition_face_id is not None:
+            if (
+                not isinstance(rekognition_face_id, str)
+                or not (1 <= len(rekognition_face_id) <= 128)
+            ):
+                raise InvalidKioskInput("INVALID_FACE_ID")
         now = self.clock()
         now_text = _iso(now)
         with self._connect() as connection:
@@ -417,7 +494,10 @@ class KioskStore:
                 relation = connection.execute(
                     """
                     SELECT t.locker_id, t.status, t.retrieval_code,
-                           t.mock_payment_id, t.amount, l.status AS locker_status
+                           t.mock_payment_id, t.amount, l.status AS locker_status,
+                           t.reference_frame_id, t.reference_face_s3_key,
+                           t.rekognition_collection_id, t.rekognition_face_id,
+                           t.face_indexed_at, t.face_deleted_at
                     FROM transactions AS t
                     JOIN lockers AS l ON l.locker_id = t.locker_id
                     WHERE t.transaction_id = ?
@@ -447,6 +527,8 @@ class KioskStore:
 
                 if relation["locker_status"] != "RESERVED":
                     raise StoreTransactionUnavailable("STORE_TRANSACTION_UNAVAILABLE")
+                if not rekognition_collection_id or not rekognition_face_id:
+                    raise InvalidKioskInput("FACE_ID_REQUIRED")
 
                 for _ in range(25):
                     retrieval_code = self._new_retrieval_code()
@@ -456,12 +538,26 @@ class KioskStore:
                             """
                             UPDATE transactions
                             SET status = ?, retrieval_code = ?, amount = ?,
-                                mock_payment_id = ?, stored_at = ?
+                                mock_payment_id = ?, stored_at = ?,
+                                reference_frame_id = ?, reference_face_s3_key = ?,
+                                reference_face_created_at = ?,
+                                reference_face_deleted_at = NULL,
+                                rekognition_collection_id = ?,
+                                rekognition_face_id = ?,
+                                face_indexed_at = ?,
+                                face_deleted_at = NULL
                             WHERE transaction_id = ? AND status = ?
                             """,
                             (
                                 "STORED", retrieval_code, int(amount), mock_payment_id,
-                                now_text, transaction_id, "RESERVED",
+                                now_text,
+                                None,
+                                None,
+                                None,
+                                rekognition_collection_id,
+                                rekognition_face_id,
+                                now_text,
+                                transaction_id, "RESERVED",
                             ),
                         )
                         if transaction_updated.rowcount != 1:
@@ -498,7 +594,19 @@ class KioskStore:
             "mockPaymentId": mock_payment_id,
             "amount": int(amount),
             "status": "STORED",
+            "referencePresent": self._row_has_auth_reference(
+                {
+                    "rekognition_face_id": rekognition_face_id,
+                    "face_deleted_at": None,
+                }
+            ),
         }
+
+    def _row_has_auth_reference(self, row):
+        keys = row.keys() if hasattr(row, "keys") else row
+        face_id = row["rekognition_face_id"] if "rekognition_face_id" in keys else None
+        face_deleted = row["face_deleted_at"] if "face_deleted_at" in keys else None
+        return bool(face_id) and not face_deleted
 
     def _stored_result(self, row, transaction_id):
         return {
@@ -508,7 +616,111 @@ class KioskStore:
             "mockPaymentId": row["mock_payment_id"],
             "amount": int(row["amount"]),
             "status": "STORED",
+            "referencePresent": self._row_has_auth_reference(row),
         }
+
+    def get_stored_by_retrieval_code(self, retrieval_code):
+        """Locate exactly one STORED transaction for retrieval face verification.
+
+        Returns internal fields including FaceId pointers. Callers must never
+        expose rekognition_face_id to the browser.
+        """
+        validate_retrieval_code(retrieval_code)
+        now = self.clock()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                self._cleanup(connection, now)
+                relation = connection.execute(
+                    """
+                    SELECT t.transaction_id, t.locker_id, t.status,
+                           t.reference_frame_id, t.reference_face_s3_key,
+                           t.reference_face_deleted_at,
+                           t.rekognition_collection_id, t.rekognition_face_id,
+                           t.face_indexed_at, t.face_deleted_at
+                    FROM transactions AS t
+                    JOIN lockers AS l ON l.locker_id = t.locker_id
+                    WHERE t.retrieval_code = ?
+                      AND t.status = ?
+                      AND l.status = ?
+                      AND l.active_transaction_id = t.transaction_id
+                    """,
+                    (retrieval_code, "STORED", "OCCUPIED"),
+                ).fetchone()
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+        return dict(relation) if relation else None
+
+    def mark_reference_deleted(self, transaction_id):
+        validate_transaction_id(transaction_id)
+        now_text = _iso(self.clock())
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                updated = connection.execute(
+                    """
+                    UPDATE transactions
+                    SET reference_face_deleted_at = ?
+                    WHERE transaction_id = ?
+                      AND status = ?
+                      AND reference_face_s3_key IS NOT NULL
+                      AND reference_face_deleted_at IS NULL
+                    """,
+                    (now_text, transaction_id, "RETRIEVED"),
+                )
+                connection.commit()
+                return updated.rowcount == 1
+            except Exception:
+                connection.rollback()
+                raise
+
+    def mark_face_deleted(self, transaction_id):
+        validate_transaction_id(transaction_id)
+        now_text = _iso(self.clock())
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                updated = connection.execute(
+                    """
+                    UPDATE transactions
+                    SET face_deleted_at = ?
+                    WHERE transaction_id = ?
+                      AND rekognition_face_id IS NOT NULL
+                      AND face_deleted_at IS NULL
+                    """,
+                    (now_text, transaction_id),
+                )
+                connection.commit()
+                return updated.rowcount == 1
+            except Exception:
+                connection.rollback()
+                raise
+
+    def list_pending_face_cleanup(self):
+        """RETRIEVED/CANCELLED/EXPIRED rows that still have a FaceId."""
+        now = self.clock()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                self._cleanup(connection, now)
+                rows = connection.execute(
+                    """
+                    SELECT transaction_id, rekognition_face_id,
+                           rekognition_collection_id, status
+                    FROM transactions
+                    WHERE rekognition_face_id IS NOT NULL
+                      AND face_deleted_at IS NULL
+                      AND status IN (?, ?, ?)
+                    """,
+                    ("RETRIEVED", "CANCELLED", "EXPIRED"),
+                ).fetchall()
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+        return [dict(row) for row in rows]
 
     def start_retrieval(self, retrieval_code):
         validate_retrieval_code(retrieval_code)
@@ -694,6 +906,7 @@ class KioskStore:
                 "retrievalCode": row["retrieval_code"],
                 "mockPaymentId": row["mock_payment_id"],
                 "amount": row["amount"],
+                "referencePresent": self._row_has_auth_reference(row),
             })
         elif row["status"] == "RETRIEVING":
             result["additionalFee"] = 0

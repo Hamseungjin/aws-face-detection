@@ -3,3 +3,6 @@ uvicorn[standard]>=0.29
 boto3>=1.34
 itsdangerous>=2.1
 python-dotenv>=1.0
+# Headless OpenCV for the local face quality gate (FastAPI has no GUI).
+# Do not also install opencv-python / opencv-contrib-python in this venv.
+opencv-python-headless>=4.8

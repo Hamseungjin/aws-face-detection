@@ -47,25 +47,40 @@ var app = new Vue({
   			})
   			.catch(function(){ self.authenticated = false; });
   	},
-  	login: function(){
-  		var self = this;
-  		this.loginError = null;
-  		this.loggingIn = true;
-  		apiAxios.post('login', { username: this.username, password: this.password })
-  			.then(function(r){
-  				self.user = r.data.user;
-  				self.password = '';
-  				self.authenticated = true;
-  				self.afterLogin();
-  			})
-  			.catch(function(e){
-  				self.authenticated = false;
-  				self.loginError = (e.response && e.response.status === 401)
-  					? "아이디 또는 비밀번호가 올바르지 않습니다."
-  					: (e.message || "로그인 실패");
-  			})
-  			.then(function(){ self.loggingIn = false; });
-  	},
+    login: function(){
+      var self = this;
+      this.loginError = null;
+      this.loggingIn = true;
+      // Login sets an HttpOnly session cookie. Verify the browser actually stored
+      // and sends it before treating the UI as authenticated (otherwise /api/config
+      // and other protected routes immediately 401).
+      apiAxios.post('login', { username: this.username, password: this.password })
+        .then(function(r){
+          self.password = '';
+          return apiAxios.get('me').then(function(me){
+            if(!(me.data && me.data.authenticated)){
+              var err = new Error('session cookie not accepted');
+              err.code = 'SESSION_COOKIE_NOT_ACCEPTED';
+              throw err;
+            }
+            self.user = (me.data && me.data.user) || (r.data && r.data.user) || '';
+            self.authenticated = true;
+            self.afterLogin();
+          });
+        })
+        .catch(function(e){
+          self.authenticated = false;
+          if(e && e.code === 'SESSION_COOKIE_NOT_ACCEPTED'){
+            self.loginError = "로그인은 성공했지만 세션을 확인하지 못했습니다. "
+              + "브라우저 쿠키 또는 프록시 설정을 확인해 주세요.";
+          } else {
+            self.loginError = (e.response && e.response.status === 401)
+              ? "아이디 또는 비밀번호가 올바르지 않습니다."
+              : (e.message || "로그인 실패");
+          }
+        })
+        .then(function(){ self.loggingIn = false; });
+    },
   	logout: function(){
   		var self = this;
   		this.stopCapture();

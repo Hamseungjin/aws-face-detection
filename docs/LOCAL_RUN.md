@@ -13,13 +13,28 @@ API Gateway)는 **이미 AWS에 배포된 `video-analyzer-stack`을 그대로** 
 
 | 구분 | 로컬 실행 | 실행 방법 요약 |
 |---|---|---|
-| webui | ✅ | `pynt webui` → `pynt webuiserver` (http://localhost:8080) |
+| webui (FastAPI) | ✅ | `web-ui/backend`에서 `uvicorn app:app --port 8080` (http://localhost:8080) |
 | KPI Dashboard | ✅ | `kpi-dashboard/backend`에서 `uvicorn app:app` (http://localhost:8000) |
 | video capture client | ✅ | `pynt videocapture[60]` (로컬 카메라 → Kinesis) |
 | **AWS 백엔드 (이미 배포돼 있어야 함)** | ❌ 로컬 불가 | `video-analyzer-stack`: Kinesis · Lambda · Rekognition · S3 · DynamoDB · API Gateway |
 
-> webui는 정적 SPA로, 브라우저가 API Gateway를 직접 호출합니다. KPI Dashboard는 boto3로
-> CloudWatch/DynamoDB를 읽습니다. capture client는 로컬 카메라 프레임을 Kinesis로 보냅니다.
+> **webui 백엔드(FastAPI)** 가 브라우저 로그인·세션·`POST /api/capture-frame`(Kinesis PutRecord)·
+> `GET/POST /api/detect-labels`(imageprocessor Lambda 설정)·`GET /api/config`(API Gateway 조회)를
+> 처리합니다. AWS 자격 증명은 **브라우저에 절대 내려가지 않고** 백엔드의 boto3 기본 자격 증명 체인만
+> 사용합니다. KPI Dashboard는 boto3로 CloudWatch/DynamoDB를 읽습니다. capture client는 로컬 카메라
+> 프레임을 Kinesis로 보냅니다.
+
+### 배포(EC2) vs 로컬 인증 차이
+
+| 환경 | 자격 증명 공급자 | 비고 |
+|---|---|---|
+| 배포 webui EC2 | **EC2 instance profile / IAM role** | `/etc/webui.env`에 키 없음. boto3가 IMDS 역할 사용 |
+| 로컬 PC / 개발 호스트 | **boto3 기본 체인** | env 키, `~/.aws/credentials`, 또는 `AWS_PROFILE` |
+| 이 저장소의 테스트 | 더미 키 + `AWS_EC2_METADATA_DISABLED=true` | AWS 호출 없음 |
+
+로컬에 자격 증명이 없으면 `NoCredentialsError` → HTTP 502
+(`… failed: AWS credentials unavailable`). EC2 역할이 있어도 **데이터 스택이 삭제/미배포**이면
+`ResourceNotFoundException` → HTTP 502 (`… failed: AWS resource not found`).
 
 ---
 
@@ -28,44 +43,65 @@ API Gateway)는 **이미 AWS에 배포된 `video-analyzer-stack`을 그대로** 
 - **Python 3.11 또는 3.12 권장** (최소 3.9 — `zoneinfo` 사용). Lambda 런타임은 3.12.
 - **pip + venv**.
 - **AWS CLI** (권장 — 자격증명 확인/디버깅용).
-- **AWS 자격증명**: 기본 자격증명 체인(`~/.aws/credentials`, 환경변수, 또는 `AWS_PROFILE`).
-  - 확인: `aws sts get-caller-identity`
-  - 프로필 사용: `AWS_PROFILE=<프로필명>`
-- **리전**: `AWS_DEFAULT_REGION=ap-northeast-2`
-- **`video-analyzer-stack`이 ap-northeast-2에 배포돼 있어야 함** (필수). 없으면 webui `apigw.js` 생성,
-  KPI 조회, capture 전송이 모두 실패.
-- **API Gateway URL / API Key**: 직접 입력 불필요. `pynt webui`가 스택에서 자동 조회해
-  `build/web-ui/src/apigw.js`에 기록합니다.
+- **AWS 자격증명** (로컬): boto3 기본 체인. **소스/프론트/`.env`에 액세스 키를 넣지 마세요.**
+  - 확인: `aws sts get-caller-identity` (또는 `AWS_PROFILE=<name> aws sts get-caller-identity`)
+  - 프로필: `export AWS_PROFILE=<프로필명>`
+  - shared files: `~/.aws/credentials` + `~/.aws/config`
+- **리전**: `AWS_DEFAULT_REGION=ap-northeast-2` (또는 `AWS_REGION`)
+- **`video-analyzer-stack`이 ap-northeast-2에 CREATE_COMPLETE/UPDATE_COMPLETE 여야 함** (필수).
+  삭제(`DELETE_COMPLETE`)되거나 없으면:
+  - Kinesis 스트림 `FrameStream` 없음 → `/api/capture-frame` 502
+  - Lambda `imageprocessor` 없음 → `/api/detect-labels` 502
+  - API Gateway 조회 실패 → `/api/config` 503
+  재생성: `pynt packagelambda` → `pynt deploylambda` → `pynt createstack` → `pynt stackstatus`
+- **webui 로컬 설정**: `cd web-ui/backend && cp .env.example .env` 후 `WEBUI_AUTH_*` /
+  `WEBUI_SESSION_SECRET`만 채움 (AWS 키 넣지 않음). 자세한 non-secret 키는 `.env.example` 참고.
 - **로컬 IAM 권한** (admin이면 전부 충족):
 
   | 구성요소 | 필요한 최소 권한 |
   |---|---|
-  | webui 빌드(`pynt webui`) | `cloudformation:DescribeStackResource`, `apigateway:GET` |
+  | webui FastAPI `POST /api/capture-frame` | `kinesis:PutRecord` on `stream/FrameStream` |
+  | webui FastAPI `GET/POST /api/detect-labels` | `lambda:GetFunctionConfiguration`, `lambda:UpdateFunctionConfiguration` on `function:imageprocessor` |
+  | webui FastAPI `GET /api/config` | `cloudformation:DescribeStackResource` on data stack, `apigateway:GET` on API keys |
   | capture client | `kinesis:PutRecord` |
   | KPI Dashboard | `logs:StartQuery`/`GetQueryResults`/`StopQuery`, `cloudwatch:GetMetricData`, `dynamodb:Query`/`DescribeTable` |
-  | webui 브라우저 → API GW | (IAM 아님, apigw.js의 API Key 사용) |
+  | 브라우저 → API GW (프레임 뷰어) | (IAM 아님, `/api/config`이 내려준 API Key) |
 
-> 루트 프로젝트(webui/capture)는 `pynt`, `boto3`, `opencv-python`, `pytz`가 설치된 Python 환경이
-> 필요합니다(프로젝트 README의 사전 준비 참고). KPI Dashboard는 별도 venv를 씁니다.
+> 루트 프로젝트(capture/`pynt`)는 `pynt`, `boto3`, `opencv-python`, `pytz`가 설치된 Python 환경이
+> 필요합니다. webui·KPI 백엔드는 각각 별도 venv를 권장합니다.
 
 ---
 
-## 3. webui 로컬 실행
+## 3. webui 로컬 실행 (FastAPI)
 
-- 빌드 태스크: `pynt webui` — `web-ui/`를 `build/web-ui/`로 복사하고, `video-analyzer-stack`을 조회해
-  `build/web-ui/src/apigw.js`에 `var apiBaseUrl=...; var apiKey=...;`를 기록.
-- 서버 태스크: `pynt webuiserver` — `build/web-ui/`를 `http.server`로 `0.0.0.0:8080` 서빙(블로킹).
-- 실행:
-  ```
-  pynt webui
-  pynt webuiserver
-  ```
-  → 브라우저 **http://localhost:8080**
-- **/enrichedframe 확인**: 페이지가 3초마다 자동 폴링 → DevTools Network에서
-  `GET .../development/enrichedframe` 200, 최근 프레임/라벨 표시.
-- **/face-compare 확인**: 페이지의 얼굴 업로드 UI에서 이미지 업로드 →
-  `POST .../face-compare` 200, 유사도 결과 표시.
-- 포트 변경: `pynt "webuiserver[web-ui/,9090]"` (그 후 http://localhost:9090).
+```bash
+cd web-ui/backend
+python3 -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+# requirements.txt includes opencv-python-headless for the kiosk Quality Gate.
+# Do not also install opencv-python or opencv-contrib-python in this venv.
+cp .env.example .env
+# .env 에 WEBUI_AUTH_USERNAME / WEBUI_AUTH_PASSWORD_HASH / WEBUI_SESSION_SECRET 설정
+#   비밀번호 해시: python auth.py 'your-password'
+#   세션 시크릿:  python -c "import secrets; print(secrets.token_urlsafe(48))"
+
+export AWS_PROFILE=default                 # 로컬 프로필명으로 변경
+export AWS_DEFAULT_REGION=ap-northeast-2
+aws sts get-caller-identity                # 실패하면 capture/detect-labels 도 실패
+
+uvicorn app:app --host 127.0.0.1 --port 8080
+```
+
+→ 브라우저 **http://localhost:8080** (운영자 UI), **http://localhost:8080/kiosk** (키오스크 UI)
+
+- 로그인 후 `GET /api/detect-labels`, 카메라 캡처 시 `POST /api/capture-frame`이 백엔드 → AWS를 호출.
+- 프레임 뷰어/ face-compare 는 로그인 후 `GET /api/config`이 API Gateway URL·Key를 내려준 뒤
+  브라우저가 API GW를 직접 호출합니다 (키는 익명 사용자에게 제공되지 않음).
+- health: `curl http://127.0.0.1:8080/healthz` → `{"status":"ok"}`
+- 포트 변경: `uvicorn app:app --port 9090`
+
+> 구버전 정적 서버(`pynt webui` / `pynt webuiserver` + `apigw.js`) 경로는 더 이상 기본 로컬
+> 실행 방식이 아닙니다. 운영자/키오스크 캡처·DetectLabels 토글은 FastAPI 백엔드가 필요합니다.
 
 ---
 
@@ -118,13 +154,17 @@ API Gateway)는 **이미 AWS에 배포된 `video-analyzer-stack`을 그대로** 
 
 ## 6. Windows PowerShell — 전체 실행 순서
 
-**터미널 1 — webui** (루트 프로젝트 env: `pynt`/`boto3`/`opencv-python`/`pytz`)
+**터미널 1 — webui (FastAPI)**
 ```powershell
-cd C:\Users\hsjki\IdeaProjects\amazon-rekognition-video-analyzer-master
+cd C:\Users\hsjki\IdeaProjects\amazon-rekognition-video-analyzer-master\web-ui\backend
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+# .env 준비 후:
 $env:AWS_PROFILE="default"
 $env:AWS_DEFAULT_REGION="ap-northeast-2"
-pynt webui
-pynt webuiserver                      # http://localhost:8080  (블로킹)
+aws sts get-caller-identity
+uvicorn app:app --host 127.0.0.1 --port 8080   # http://localhost:8080
 ```
 
 **터미널 2 — KPI Dashboard**
@@ -157,11 +197,15 @@ pynt videocapture[60]                 # 종료: 미리보기 창에서 'q'
 ## 7. macOS / Linux — 전체 실행 순서
 
 ```bash
-# 터미널 1 — webui
-cd ~/.../amazon-rekognition-video-analyzer-master
+# 터미널 1 — webui (FastAPI)
+cd ~/.../amazon-rekognition-video-analyzer-master/web-ui/backend
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+# .env 준비 후:
 export AWS_PROFILE=default
 export AWS_DEFAULT_REGION=ap-northeast-2
-pynt webui && pynt webuiserver        # http://localhost:8080
+aws sts get-caller-identity
+uvicorn app:app --host 127.0.0.1 --port 8080   # http://localhost:8080
 
 # 터미널 2 — KPI Dashboard
 cd ~/.../amazon-rekognition-video-analyzer-master/kpi-dashboard/backend
@@ -213,17 +257,22 @@ pynt videocapture[60]                 # 종료: 'q'
 
 | 증상 | 원인 / 해결 |
 |---|---|
-| AWS credentials 없음 | `aws sts get-caller-identity`로 확인. `AWS_PROFILE` 또는 `~/.aws/credentials` 설정. |
+| `POST /api/capture-frame` 502 · `kinesis PutRecord failed: AWS credentials unavailable` | 로컬 자격 증명 없음. `aws sts get-caller-identity`, `AWS_PROFILE` 또는 `~/.aws/credentials` 설정. **키를 소스/프론트에 넣지 말 것.** |
+| `GET /api/detect-labels` 502 · `lambda … AWS credentials unavailable` | 위와 동일 (boto3 체인). 예전 UI 문구 `Unable to locate credentials` 도 같은 원인. |
+| capture/detect-labels 502 · `AWS resource not found` | **데이터 스택 미배포/삭제**. `aws kinesis describe-stream-summary --stream-name FrameStream --region ap-northeast-2`, `aws lambda get-function-configuration --function-name imageprocessor --region ap-northeast-2`. 없으면 `pynt createstack`. |
+| capture/detect-labels 502 · `AWS access denied` | 자격 증명은 있으나 IAM 부족(2장 표). |
+| `/api/config` 503 | 스택 조회 실패 또는 `cloudformation:DescribeStackResource` / `apigateway:GET` 권한 부족. 캡처와 무관(프레임 뷰어만 영향). |
+| AWS credentials 없음 (CLI) | `aws sts get-caller-identity`로 확인. `AWS_PROFILE` 또는 `~/.aws/credentials` 설정. |
 | AccessDenied | 로컬 IAM 권한 부족(2장 표). KPI는 카드별 error로 표시(partial failure). |
-| `video-analyzer-stack` 못 찾음 | 리전 불일치(ap-northeast-2?) 또는 미배포. `aws cloudformation describe-stacks --stack-name video-analyzer-stack --region ap-northeast-2`. |
-| `apigw.js` 생성 실패 / 빈 값 | `pynt webui`의 스택 조회 실패. 자격증명·리전·스택명 확인 후 `build/web-ui/src/apigw.js` 내용 확인. |
+| `video-analyzer-stack` 못 찾음 | 리전 불일치(ap-northeast-2?) 또는 미배포/삭제. `aws cloudformation describe-stacks --stack-name video-analyzer-stack --region ap-northeast-2`. |
 | KPI가 mock으로 보임 | 구버전 코드. 현재 코드는 `source=live`. |
 | KPI가 error 배지 | `/api/kpis` 최상위 `error`/`collect_error`(브라우저 콘솔 `console.warn`). region/네트워크/자격증명 확인. |
 | KPI 카드별 error | 권한 부족(`logs:StartQuery` / `dynamodb:Query` / `cloudwatch:GetMetricData`) — 다른 카드는 정상. |
 | localhost 접속 안 됨 | 서버 프로세스 실행 여부, 방화벽, `--host 127.0.0.1` 확인. |
-| 포트 8080 / 8000 충돌 | webui: `pynt "webuiserver[web-ui/,9090]"`. KPI: `KPI_PORT=8010` + `uvicorn app:app --port 8010`. |
+| 포트 8080 / 8000 충돌 | webui: `uvicorn app:app --port 9090`. KPI: `KPI_PORT=8010` + `uvicorn app:app --port 8010`. |
 | CloudWatch Logs Insights 권한 부족 | 해당 카드 `{"error":"...logs:StartQuery..."}`. IAM 보강 또는 일부 카드 미표시 수용. |
 | DynamoDB Query 권한 부족 | frames 카드 `{"error":"...dynamodb:Query..."}`. `EnrichedFrame` + GSI Query 권한 부여. |
+| Chrome `chrome-extension://… message port closed` | **브라우저 확장 프로그램 메시지**. 이 앱/AWS와 무관. |
 
 ---
 

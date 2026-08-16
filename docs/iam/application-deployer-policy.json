@@ -1,0 +1,125 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ValidateLocalApplicationTemplate",
+      "Effect": "Allow",
+      "Action": "cloudformation:ValidateTemplate",
+      "Resource": "*"
+    },
+    {
+      "Sid": "CreateApplicationStackChangeSetWithApprovedExecutionRole",
+      "Effect": "Allow",
+      "Action": "cloudformation:CreateChangeSet",
+      "Resource": "arn:aws:cloudformation:ap-northeast-2:115019372648:stack/video-analyzer-ec2-stack/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-northeast-2",
+          "cloudformation:RoleArn": "arn:aws:iam::115019372648:role/ApplicationStackExecutionRole"
+        },
+        "StringLike": {
+          "cloudformation:ChangeSetName": "application-greenfield-create-*"
+        }
+      }
+    },
+    {
+      "Sid": "ReviewAndExecuteNamedApplicationChangeSet",
+      "Effect": "Allow",
+      "Action": [
+        "cloudformation:DescribeChangeSet",
+        "cloudformation:ExecuteChangeSet"
+      ],
+      "Resource": "arn:aws:cloudformation:ap-northeast-2:115019372648:stack/video-analyzer-ec2-stack/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-northeast-2"
+        },
+        "StringLike": {
+          "cloudformation:ChangeSetName": "application-greenfield-create-*"
+        }
+      }
+    },
+    {
+      "Sid": "ReadApplicationStackState",
+      "Effect": "Allow",
+      "Action": [
+        "cloudformation:DescribeStacks",
+        "cloudformation:DescribeStackEvents",
+        "cloudformation:DescribeStackResource",
+        "cloudformation:DescribeStackResources",
+        "cloudformation:GetTemplate",
+        "cloudformation:ListStackResources"
+      ],
+      "Resource": "arn:aws:cloudformation:ap-northeast-2:115019372648:stack/video-analyzer-ec2-stack/*"
+    },
+    {
+      "Sid": "PassOnlyApplicationStackExecutionRoleToCloudFormation",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "arn:aws:iam::115019372648:role/ApplicationStackExecutionRole",
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": "cloudformation.amazonaws.com"
+        }
+      }
+    },
+    {
+      "Sid": "ReadOnlyApplicationNetworkPreflight",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DescribeAccountAttributes",
+        "ec2:DescribeAddresses",
+        "ec2:DescribeAvailabilityZones",
+        "ec2:DescribeInstances",
+        "ec2:DescribeInternetGateways",
+        "ec2:DescribeNetworkAcls",
+        "ec2:DescribeNetworkInterfaces",
+        "ec2:DescribeRouteTables",
+        "ec2:DescribeSecurityGroups",
+        "ec2:DescribeSubnets",
+        "ec2:DescribeVpcs"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-northeast-2"
+        }
+      }
+    },
+    {
+      "Sid": "ReadEc2VpcElasticIpQuota",
+      "Effect": "Allow",
+      "Action": "servicequotas:GetServiceQuota",
+      "Resource": "arn:aws:servicequotas:ap-northeast-2:115019372648:ec2/L-0263D0A3"
+    },
+    {
+      "Sid": "ReadApplicationArtifactBucketRegion",
+      "Effect": "Allow",
+      "Action": "s3:GetBucketLocation",
+      "Resource": "arn:aws:s3:::aws-face-detection-lambda-115019372648-apne2"
+    },
+    {
+      "Sid": "ListApplicationArtifactPrefix",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::aws-face-detection-lambda-115019372648-apne2",
+      "Condition": {
+        "StringLike": {
+          "s3:prefix": [
+            "apps/",
+            "apps/*"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "PublishAndVerifyApplicationArtifacts",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject"
+      ],
+      "Resource": "arn:aws:s3:::aws-face-detection-lambda-115019372648-apne2/apps/*"
+    }
+  ]
+}

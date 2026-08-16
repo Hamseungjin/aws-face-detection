@@ -34,6 +34,38 @@ def read_json(jsonf_path):
         json_text = jsonf.read()
         return json.loads(json_text)
 
+_YUNET_MODEL_REL = os.path.join(
+    "web-ui", "backend", "models", "face_detection_yunet_2023mar.onnx"
+)
+_YUNET_SHA256_REL = _YUNET_MODEL_REL + ".sha256"
+
+
+def _require_yunet_model():
+    """Fail packaging when the official YuNet ONNX is missing or tampered."""
+    import hashlib
+
+    model_path = _YUNET_MODEL_REL
+    checksum_path = _YUNET_SHA256_REL
+    if not os.path.isfile(model_path):
+        raise SystemExit(
+            "YuNet model missing: %s (run python3 scripts/fetch_yunet_model.py)"
+            % model_path
+        )
+    if not os.path.isfile(checksum_path):
+        raise SystemExit("YuNet checksum file missing: %s" % checksum_path)
+    expected = open(checksum_path, "r", encoding="utf-8").read().strip().split()[0]
+    digest = hashlib.sha256()
+    with open(model_path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    actual = digest.hexdigest()
+    if actual.lower() != expected.lower():
+        raise SystemExit(
+            "YuNet checksum mismatch expected=%s actual=%s" % (expected, actual)
+        )
+    print("YuNet model ok sha256=%s" % actual)
+
+
 def _exclude_dev_files(tarinfo):
     '''tarfile filter: never package local dev secrets/venvs/caches into app artifacts.
 
@@ -73,43 +105,15 @@ def clean():
 
 @task()
 def packagelambda(* functions):
-    '''Package lambda functions into a deployment-ready zip files.''' 
-    if not os.path.exists('build'):
-        os.mkdir('build')
-
-    os.chdir("build")
-
-    if(len(functions) == 0):
-        functions = ("framefetcher", "imageprocessor", "facecompare")
-
-    for function in functions:
-        print('Packaging "%s" lambda function in directory' % function)
-        zipf = zipfile.ZipFile("%s.zip" % function, "w", zipfile.ZIP_DEFLATED)
-        
-        write_dir_to_zip("../lambda/%s/" % function, zipf)
-        zipf.write("../config/%s-params.json" % function, "%s-params.json" % function)
-
-        zipf.close()
-
-    os.chdir("..")
-    
+    '''No-op. Kiosk-only data stack has no Lambda functions.'''
+    print("Kiosk-only: Lambda packaging removed.")
     return
 
 
 @task()
 def updatelambda(*functions):
-    '''Directly update lambda function code in AWS (without upload to S3).'''
-    lambda_client = boto3.client('lambda')
-
-    if(len(functions) == 0):
-        functions = ("framefetcher", "imageprocessor", "facecompare")
-
-    for function in functions:
-        with open('build/%s.zip' % (function), 'rb') as zipf:
-            lambda_client.update_function_code(
-                FunctionName=function,
-                ZipFile=zipf.read()
-            )
+    '''No-op. Kiosk-only data stack has no Lambda functions.'''
+    print("Kiosk-only: Lambda update removed.")
     return
 
 @task()
@@ -123,7 +127,7 @@ def setlogretention(*functions, **kwargs):
     occurs when declaring AWS::Logs::LogGroup resources for functions whose
     groups were already auto-created. Pass days via kwarg, default 30.
     Usage: pynt setlogretention            (all functions, 30 days)
-           pynt setlogretention[imageprocessor]
+           pynt setlogretention
     '''
     days = int(kwargs.get("days", 30))
 
@@ -150,51 +154,10 @@ def setlogretention(*functions, **kwargs):
 
 @task()
 def deploylambda(* functions, **kwargs):
-    '''Upload lambda functions .zip file to S3 for download by CloudFormation stack during creation.'''
-    
-    cfn_params_path = kwargs.get("cfn_params_path", "config/cfn-params.json")
-
-    if(len(functions) == 0):
-        functions = ("framefetcher", "imageprocessor", "facecompare")
-
-    region_name = boto3.session.Session().region_name
-    s3_keys = {}
-
-    cfn_params_dict = read_json(cfn_params_path)
-    src_s3_bucket_name = cfn_params_dict["SourceS3BucketParameter"]
-    s3_keys["framefetcher"] = cfn_params_dict["FrameFetcherSourceS3KeyParameter"]
-    s3_keys["imageprocessor"] = cfn_params_dict["ImageProcessorSourceS3KeyParameter"]
-    s3_keys["facecompare"] = cfn_params_dict["FaceCompareSourceS3KeyParameter"]
-
-    s3_client = boto3.client("s3")
-    
-    print("Checking if S3 Bucket '%s' exists..." % (src_s3_bucket_name))
-
-    if( not check_bucket_exists(src_s3_bucket_name)):
-        print("Bucket %s not found. Creating in region %s." % (src_s3_bucket_name, region_name))
-
-        if( region_name == "us-east-1"):
-            s3_client.create_bucket(
-                # ACL="authenticated-read",
-                Bucket=src_s3_bucket_name
-            )
-        else:
-            s3_client.create_bucket(
-                #ACL="authenticated-read",
-                Bucket=src_s3_bucket_name,
-                CreateBucketConfiguration={
-                    "LocationConstraint": region_name
-                }
-            )
-
-    for function in functions:
-        
-        print("Uploading function '%s' to '%s'" % (function, s3_keys[function]))
-        
-        with open('build/%s.zip' % (function), 'rb') as data:
-            s3_client.upload_fileobj(data, src_s3_bucket_name, s3_keys[function])
-    
+    '''No-op. Kiosk-only data stack has no Lambda artifacts.'''
+    print("Kiosk-only: Lambda S3 upload removed.")
     return
+
 
 @task()
 def createstack(**kwargs):
@@ -313,17 +276,7 @@ def deletestack(** kwargs):
     cfn_params_dict = read_json(cfn_params_path)
 
     stack_name = global_params_dict["StackName"]
-    usage_plan_name = cfn_params_dict["ApiGatewayUsagePlanNameParameter"]
-    
     cfn_client = boto3.client('cloudformation')
-    apigw_client = boto3.client('apigateway')
-
-    # Empty all objects in the frame bucket prior to deleting the stack.
-    frame_s3_bucket_name = cfn_params_dict["FrameS3BucketNameParameter"]
-    print("Attempting to DELETE ALL OBJECTS in '%s' bucket." % frame_s3_bucket_name)
-    
-    s3 = boto3.resource('s3')
-    s3.Bucket(frame_s3_bucket_name).objects.delete()
 
     print("Attempting to DELETE '%s' stack using CloudFormation." % stack_name)
     start_t = time.time()
@@ -335,13 +288,6 @@ def deletestack(** kwargs):
     cfn_stack_delete_waiter = cfn_client.get_waiter('stack_delete_complete')
     cfn_stack_delete_waiter.wait(StackName=stack_name)
     print("Stack DELETED in approximately %d secs." % int(time.time() - start_t))
-
-    print("Cleaning up API Gateway UsagePlan resource.")
-    usage_plans = apigw_client.get_usage_plans()
-    for usage_plan in usage_plans['items']:
-        if(usage_plan['name'] == usage_plan_name):
-            apigw_client.delete_usage_plan(usagePlanId=usage_plan['id'])
-
 
 
 @task()
@@ -360,54 +306,7 @@ def webui(webdir="web-ui/", global_params_path="config/global-params.json", cfn_
     # Copy web-ui source
     print("Copying Web UI source from '%s' to build directory." % webdir)
     shutil.copytree(webdir, web_build_dir)
-
-    global_params_dict = read_json(global_params_path)
-    stack_name = global_params_dict["StackName"]
-
-    cfn_params_dict = read_json(cfn_params_path)
-
-    cfn_client = boto3.client('cloudformation')
-    apigw_client = boto3.client('apigateway')
-
-
-    # Get Rest API Id
-    print("Retrieving API key from stack '%s'." % stack_name)
-    response = cfn_client.describe_stack_resource(
-        StackName=stack_name,
-        LogicalResourceId=cfn_params_dict["ApiGatewayRestApiNameParameter"]
-    )
-
-    rest_api_id = response["StackResourceDetail"]["PhysicalResourceId"]
-
-    # Get API Key
-    response = cfn_client.describe_stack_resource(
-        StackName=stack_name,
-        LogicalResourceId="VidAnalyzerApiKey"
-    )
-
-    api_key_id = response["StackResourceDetail"]["PhysicalResourceId"]
-
-    response = apigw_client.get_api_key(
-        apiKey=api_key_id,
-        includeValue=True
-    )
-
-    api_key_value = response["value"]
-
-    api_stage_name = cfn_params_dict["ApiGatewayStageNameParameter"]
-
-    region_name = boto3.session.Session().region_name
-
-    print("Putting together the API Gateway base URL.")
-    
-    api_base_url = "https://%s.execute-api.%s.amazonaws.com/%s" % (rest_api_id, region_name, api_stage_name)
-
-    print("Writing API key and API base URL to apigw.js in '%ssrc/'" % web_build_dir)
-
-    # Output key value and invoke url to apigw.js
-    apigw_js = open('%ssrc/apigw.js' % web_build_dir, 'w')
-    apigw_js.write('var apiBaseUrl="%s";\nvar apiKey="%s";\n' % (api_base_url, api_key_value))
-    apigw_js.close()
+    print("Kiosk-only: no API Gateway key is injected into the UI.")
 
 
 
@@ -527,25 +426,34 @@ def deletedata(global_params_path="config/global-params.json", cfn_params_path="
     return
 
 # ---------------------------------------------------------------------------
-# EC2 deployment stack (webui + KPI dashboard).
+# EC2 Application stack (greenfield: ONE ApplicationInstance).
 #
 # These tasks manage a SEPARATE CloudFormation stack (video-analyzer-ec2-stack)
-# from the data pipeline stack (video-analyzer-stack). createec2stack /
-# updateec2stack reuse the generic createstack / updatestack tasks (both have no
-# dependencies, so calling them directly is safe) by passing the EC2 template and
-# config paths via kwargs. deleteec2stack is a dedicated, minimal delete: it does
-# NOT empty the frames S3 bucket or remove an API Gateway usage plan (that logic
-# is specific to the data stack and must never run here).
+# from the data pipeline stack (video-analyzer-stack). The EC2 template creates
+# exactly one host: Nginx + FastAPI + KPI + SQLite EBS — no WebUi/Kpi dual hosts.
+# createec2stack / updateec2stack reuse createstack / updatestack with the EC2
+# template and config paths. deleteec2stack does NOT touch the data stack or
+# frames bucket.
 # ---------------------------------------------------------------------------
 
 @task()
 def createec2stack():
-    '''Create the EC2 deployment stack (webui + KPI dashboard). Separate from the data stack.
+    '''Create the greenfield Application-only EC2 stack (ONE instance).
 
-    NOTE: This stack (PR 1) has no start/stop scheduler yet, so the instances stay
-    running after creation. After verifying, STOP them manually to avoid charges:
-        aws ec2 stop-instances --instance-ids <WebUiInstanceId> <KpiInstanceId>
-    (the exact command is also printed as the 'StopInstancesCommand' stack output).'''
+    Prerequisites:
+      - video-analyzer-stack CREATE_COMPLETE (data plane)
+      - config/ec2-global-params.json + config/ec2-params.json
+        (copy from config/*.example.json; fill VPC/subnet/FrameS3Bucket/artifact bucket)
+      - pynt setwebuiauth
+      - pynt publishapps
+
+    Creates: ApplicationInstance + EIP + data volume (+ optional scheduler).
+    Does NOT create WebUiInstance or KpiInstance.
+
+    After verify, stop to save compute cost (EIP + EBS still bill):
+        aws ec2 stop-instances --instance-ids <ApplicationInstanceId>
+    (also printed as stack output StopInstancesCommand).'''
+    print("Creating GREENFIELD Application-only stack (expected EC2 count = 1).")
     createstack(
         cfn_path="aws-infra/aws-infra-ec2-cfn.yaml",
         global_params_path="config/ec2-global-params.json",
@@ -554,11 +462,10 @@ def createec2stack():
 
 @task()
 def updateec2stack():
-    '''Update the EC2 deployment stack.
+    '''Update the Application-only EC2 stack.
 
-    Use this e.g. to lock inbound down to your machine: set
-    "AllowedIngressCidrParameter" to "MY_PUBLIC_IP/32" in config/ec2-params.json,
-    then run this task.'''
+    Example: lock inbound to your IP via AllowedIngressCidrParameter in
+    config/ec2-params.json, then run this task.'''
     updatestack(
         cfn_path="aws-infra/aws-infra-ec2-cfn.yaml",
         global_params_path="config/ec2-global-params.json",
@@ -585,16 +492,20 @@ def deleteec2stack(global_params_path="config/ec2-global-params.json"):
 
 @task()
 def ec2ip(global_params_path="config/ec2-global-params.json"):
-    '''Print current public IPs of the EC2 deployment instances.
+    '''Print public IPs of EC2 stack instances (greenfield: ApplicationInstance only).
 
-    No Elastic IP is used (cost choice), so the public IP CHANGES on every
-    stop/start. Run this after each start to get the current address.'''
+    Uses stack EIP association when present (stable across stop/start).'''
     stack_name = read_json(global_params_path)["StackName"]
 
     cfn_client = boto3.client('cloudformation')
     ec2_client = boto3.client('ec2')
 
-    resources = cfn_client.describe_stack_resources(StackName=stack_name)["StackResources"]
+    try:
+        resources = cfn_client.describe_stack_resources(StackName=stack_name)["StackResources"]
+    except ClientError as e:
+        print("Could not describe stack '%s': %s" % (stack_name, e))
+        return
+
     instance_ids = [r["PhysicalResourceId"] for r in resources
                     if r["ResourceType"] == "AWS::EC2::Instance"]
 
@@ -602,6 +513,7 @@ def ec2ip(global_params_path="config/ec2-global-params.json"):
         print("No EC2 instances found in stack '%s'." % stack_name)
         return
 
+    print("EC2 instance count in stack: %d (greenfield target = 1)" % len(instance_ids))
     for reservation in ec2_client.describe_instances(InstanceIds=instance_ids)["Reservations"]:
         for inst in reservation["Instances"]:
             name = next((t["Value"] for t in inst.get("Tags", []) if t["Key"] == "Name"),
@@ -617,12 +529,22 @@ def ec2vpcinfo():
     '''Print the default VPC id and its subnets to help fill config/ec2-params.json.
 
     Pick the default VPC id for "VpcIdParameter" and a PUBLIC subnet id for
-    "SubnetIdParameter".'''
+    "SubnetIdParameter". Requires ec2:DescribeVpcs/DescribeSubnets (admin role).
+    The kiosk/dev instance role often lacks these APIs — use an admin principal.'''
     ec2_client = boto3.client('ec2')
 
-    vpcs = ec2_client.describe_vpcs(
-        Filters=[{"Name": "isDefault", "Values": ["true"]}]
-    )["Vpcs"]
+    try:
+        vpcs = ec2_client.describe_vpcs(
+            Filters=[{"Name": "isDefault", "Values": ["true"]}]
+        )["Vpcs"]
+    except ClientError as e:
+        print("DescribeVpcs failed: %s" % e)
+        print("Fallback (reference only): read this host's network from IMDS if on EC2:")
+        print("  curl -s -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' \\")
+        print("    http://169.254.169.254/latest/api/token")
+        print("  # then mac → ENI → subnet/vpc via authorized principal")
+        print("Do NOT bake IMDS values into the CFN template automatically.")
+        return
 
     if not vpcs:
         print("No default VPC found in this region. Specify any VPC + public subnet manually.")
@@ -644,19 +566,22 @@ def ec2vpcinfo():
 
 @task()
 def publishapps(*apps, **kwargs):
-    '''Package and upload EC2 app artifacts + bootstrap scripts to S3 for instance boot.
+    '''Package and upload Application stack artifacts to S3 for instance boot.
 
-    webui: tars the static web-ui/ source and uploads it alongside the bootstrap
-    script, the apigw.js generator, and the systemd unit. (kpi is added in PR 3.)
-    Artifact bucket/prefix are read from config/ec2-params.json.
+    Default (all three):
+      webui:       apps/webui/web-ui.tgz (+ optional legacy bootstrap files)
+      kpi:         apps/kpi/kpi-dashboard.tgz (+ optional standalone kpi unit)
+      application: apps/application/* bootstrap, systemd units, nginx, TLS refresh
 
-    DEPLOYMENT ORDER (run publishapps BEFORE the stack so the scripts exist at boot):
-        pynt publishapps webui
-        pynt createec2stack            # or: pynt updateec2stack
-        # then on the instance (via SSM):
-        #   systemctl status webui
-        #   cat /opt/webui/src/apigw.js
-        # then in a browser:  http://<webui-public-ip>:8080
+    ApplicationInstance bootstrap reuses web-ui.tgz and kpi-dashboard.tgz.
+
+    Artifact bucket/prefix from config/ec2-params.json.
+
+    DEPLOYMENT ORDER:
+        pynt publishapps
+        pynt createec2stack
+        # https://<ApplicationElasticIp>/
+        # https://<ApplicationElasticIp>/dashboard/
     '''
     ec2_params_path = kwargs.get("ec2_params_path", "config/ec2-params.json")
     ec2_params = read_json(ec2_params_path)
@@ -664,7 +589,7 @@ def publishapps(*apps, **kwargs):
     prefix = ec2_params["AppArtifactS3KeyPrefixParameter"]
 
     if(len(apps) == 0):
-        apps = ("webui", "kpi")
+        apps = ("webui", "kpi", "application")
 
     if not os.path.exists("build"):
         os.mkdir("build")
@@ -673,6 +598,7 @@ def publishapps(*apps, **kwargs):
 
     for app in apps:
         if app == "webui":
+            _require_yunet_model()
             tar_path = "build/web-ui.tgz"
             print("Packaging web-ui/ -> %s" % tar_path)
             with tarfile.open(tar_path, "w:gz") as tar:
@@ -680,11 +606,15 @@ def publishapps(*apps, **kwargs):
 
             uploads = [
                 (tar_path, "%swebui/web-ui.tgz" % prefix),
+                # Legacy standalone webui host artifacts (optional; not used by Application-only stack)
                 ("aws-infra/userdata/webui-bootstrap.sh", "%swebui/bootstrap.sh" % prefix),
                 ("aws-infra/userdata/webui-genconfig.sh", "%swebui/webui-genconfig.sh" % prefix),
                 ("aws-infra/userdata/webui.service", "%swebui/webui.service" % prefix),
             ]
             for local_path, key in uploads:
+                if not os.path.isfile(local_path) and not local_path.endswith(".tgz"):
+                    print("Skip missing optional %s" % local_path)
+                    continue
                 print("Uploading %s -> s3://%s/%s" % (local_path, bucket, key))
                 s3_client.upload_file(local_path, bucket, key)
         elif app == "kpi":
@@ -701,10 +631,128 @@ def publishapps(*apps, **kwargs):
             for local_path, key in uploads:
                 print("Uploading %s -> s3://%s/%s" % (local_path, bucket, key))
                 s3_client.upload_file(local_path, bucket, key)
+        elif app == "application":
+            print("Publishing ApplicationInstance artifacts (apps/application/*)")
+            uploads = [
+                ("aws-infra/userdata/application-bootstrap.sh",
+                 "%sapplication/bootstrap.sh" % prefix),
+                ("aws-infra/userdata/kiosk-fastapi.service",
+                 "%sapplication/kiosk-fastapi.service" % prefix),
+                ("aws-infra/userdata/kpi-dashboard-loopback.service",
+                 "%sapplication/kpi-dashboard.service" % prefix),
+                ("aws-infra/nginx/application.conf",
+                 "%sapplication/nginx-application.conf" % prefix),
+                ("aws-infra/userdata/application-tls-refresh.sh",
+                 "%sapplication/application-tls-refresh.sh" % prefix),
+                ("aws-infra/userdata/application-tls-refresh.service",
+                 "%sapplication/application-tls-refresh.service" % prefix),
+            ]
+            for local_path, key in uploads:
+                if not os.path.isfile(local_path):
+                    print("ERROR: missing %s — cannot publish application artifacts." % local_path)
+                    raise SystemExit(1)
+                print("Uploading %s -> s3://%s/%s" % (local_path, bucket, key))
+                s3_client.upload_file(local_path, bucket, key)
+            print("Note: also needs apps/webui/web-ui.tgz and apps/kpi/kpi-dashboard.tgz "
+                  "(included when running pynt publishapps with no args).")
         else:
-            print("Unknown app '%s' (expected 'webui' or 'kpi'). Skipping." % app)
+            print("Unknown app '%s' (expected 'webui', 'kpi', or 'application'). Skipping." % app)
 
     return
+
+@task()
+def applicationip(global_params_path="config/ec2-global-params.json"):
+    '''Print ApplicationInstance public IP / EIP (read-only).'''
+    stack_name = read_json(global_params_path)["StackName"]
+    cfn_client = boto3.client("cloudformation")
+    ec2_client = boto3.client("ec2")
+
+    try:
+        outputs = {
+            o["OutputKey"]: o["OutputValue"]
+            for o in cfn_client.describe_stacks(StackName=stack_name)["Stacks"][0].get("Outputs", [])
+        }
+    except ClientError as e:
+        print("Could not describe stack '%s': %s" % (stack_name, e))
+        return
+
+    app_id = outputs.get("ApplicationInstanceId")
+    app_eip = outputs.get("ApplicationElasticIp")
+    app_url = outputs.get("ApplicationUrl")
+    dash_url = outputs.get("ApplicationDashboardUrl")
+
+    if not app_id:
+        print("No ApplicationInstanceId output on stack '%s'." % stack_name)
+        return
+
+    state = "(unknown)"
+    public_ip = app_eip or "(none)"
+    try:
+        inst = ec2_client.describe_instances(InstanceIds=[app_id])["Reservations"][0]["Instances"][0]
+        state = inst["State"]["Name"]
+        if inst.get("PublicIpAddress"):
+            public_ip = inst["PublicIpAddress"]
+    except (ClientError, IndexError, KeyError) as e:
+        print("Instance describe warning: %s" % e)
+
+    print("ApplicationInstanceId=%s" % app_id)
+    print("state=%s" % state)
+    print("public_ip=%s" % public_ip)
+    if app_eip:
+        print("ApplicationElasticIp=%s" % app_eip)
+    if app_url:
+        print("ApplicationUrl=%s" % app_url)
+    if dash_url:
+        print("ApplicationDashboardUrl=%s" % dash_url)
+    print("Note: demo path is https://<eip>/  — NOT /proxy/8080/")
+
+@task()
+def applicationstatus(global_params_path="config/ec2-global-params.json"):
+    '''Summarize Application stack resources (read-only greenfield check).'''
+    stack_name = read_json(global_params_path)["StackName"]
+    cfn_client = boto3.client("cloudformation")
+    want = {
+        "ApplicationInstance",
+        "ApplicationInstanceRole",
+        "ApplicationInstanceProfile",
+        "ApplicationSecurityGroup",
+        "ApplicationDataVolume",
+        "ApplicationDataVolumeAttachment",
+        "ApplicationElasticIp",
+        "ApplicationElasticIpAssociation",
+    }
+    try:
+        resources = cfn_client.describe_stack_resources(StackName=stack_name)["StackResources"]
+    except ClientError as e:
+        print("Could not describe stack resources for '%s': %s" % (stack_name, e))
+        return
+
+    found = 0
+    ec2_count = 0
+    eip_count = 0
+    volume_count = 0
+    legacy_hits = []
+    for r in sorted(resources, key=lambda x: x["LogicalResourceId"]):
+        lid = r["LogicalResourceId"]
+        rtype = r["ResourceType"]
+        if rtype == "AWS::EC2::Instance":
+            ec2_count += 1
+        if rtype == "AWS::EC2::EIP":
+            eip_count += 1
+        if rtype == "AWS::EC2::Volume":
+            volume_count += 1
+        if lid in ("WebUiInstance", "KpiInstance", "WebUiElasticIp", "KpiElasticIp"):
+            legacy_hits.append(lid)
+        if lid in want or lid.startswith("Application") or lid.startswith("Schedule") or lid == "SchedulerRole":
+            found += 1
+            print("%-40s %-28s %s" % (
+                lid, rtype.split("::")[-1], r["ResourceStatus"]))
+    print("EC2_count=%d EIP_count=%d Volume_count=%d Application_related=%d" % (
+        ec2_count, eip_count, volume_count, found))
+    if legacy_hits:
+        print("WARNING: unexpected legacy logical IDs still in stack: %s" % ", ".join(legacy_hits))
+    else:
+        print("legacy WebUi/Kpi resources present=false (greenfield OK)")
 
 @task()
 def setwebuiauth(**kwargs):

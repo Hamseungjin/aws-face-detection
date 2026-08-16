@@ -1,0 +1,36 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "WriteOnlyWebUiAuthParameters",
+      "Effect": "Allow",
+      "Action": "ssm:PutParameter",
+      "Resource": [
+        "arn:aws:ssm:ap-northeast-2:115019372648:parameter/video-analyzer/webui/auth-username",
+        "arn:aws:ssm:ap-northeast-2:115019372648:parameter/video-analyzer/webui/password-hash",
+        "arn:aws:ssm:ap-northeast-2:115019372648:parameter/video-analyzer/webui/session-secret"
+      ]
+    },
+    {
+      "Sid": "EncryptWebUiSecureStringsWithAwsSsmKeyOnly",
+      "Effect": "Allow",
+      "Action": "kms:Encrypt",
+      "Resource": "arn:aws:kms:ap-northeast-2:115019372648:key/*",
+      "Condition": {
+        "StringEquals": {
+          "kms:CallerAccount": "115019372648",
+          "kms:ViaService": "ssm.ap-northeast-2.amazonaws.com"
+        },
+        "ForAnyValue:StringEquals": {
+          "kms:ResourceAliases": "alias/aws/ssm"
+        },
+        "StringLike": {
+          "kms:EncryptionContext:PARAMETER_ARN": [
+            "arn:aws:ssm:ap-northeast-2:115019372648:parameter/video-analyzer/webui/password-hash",
+            "arn:aws:ssm:ap-northeast-2:115019372648:parameter/video-analyzer/webui/session-secret"
+          ]
+        }
+      }
+    }
+  ]
+}

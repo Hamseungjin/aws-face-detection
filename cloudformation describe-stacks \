@@ -1,0 +1,24 @@
+{
+    "RoleName": "AwsFaceDetectionKioskRole",
+    "PolicyName": "DataStackRekognitionCollectionDeployPolicy",
+    "PolicyDocument": {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Sid": "CreateKioskFaceCollectionForDataStack",
+                "Effect": "Allow",
+                "Action": "rekognition:CreateCollection",
+                "Resource": "*"
+            },
+            {
+                "Sid": "ManageKioskFaceCollectionForDataStack",
+                "Effect": "Allow",
+                "Action": [
+                    "rekognition:DescribeCollection",
+                    "rekognition:DeleteCollection"
+                ],
+                "Resource": "arn:aws:rekognition:ap-northeast-2:115019372648:collection/kiosk-face-collection"
+            }
+        ]
+    }
+}

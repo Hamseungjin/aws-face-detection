@@ -39,6 +39,15 @@ def locker_status(store, locker_id):
     }[locker_id]
 
 
+
+def complete(store, transaction_id, face_id="face-id-test"):
+    return store.complete_store(
+        transaction_id,
+        rekognition_collection_id="kiosk-faces-test",
+        rekognition_face_id=face_id,
+    )
+
+
 def test_initialization_is_idempotent_and_preserves_state(database_path):
     first = KioskStore(database_path)
     reservation = first.reserve_locker("04")
@@ -123,7 +132,7 @@ def test_cancelling_reserved_transaction_releases_locker(store):
 
 def test_completing_store_persists_codes_and_occupies_locker(store):
     reservation = store.reserve_locker("04")
-    result = store.complete_store(reservation["transactionId"])
+    result = complete(store, reservation["transactionId"])
     transaction = store.get_transaction(reservation["transactionId"])
 
     assert locker_status(store, "04") == "OCCUPIED"
@@ -137,7 +146,7 @@ def test_completing_store_persists_codes_and_occupies_locker(store):
 def test_completing_store_twice_returns_same_persisted_result(store, database_path):
     reservation = store.reserve_locker("04")
 
-    first = store.complete_store(reservation["transactionId"])
+    first = complete(store, reservation["transactionId"])
     second = store.complete_store(reservation["transactionId"])
 
     assert second == first
@@ -170,7 +179,7 @@ def test_completing_expired_store_is_rejected(database_path):
 
 
 def test_completing_retrieved_store_is_rejected(store):
-    stored = store.complete_store(store.reserve_locker("04")["transactionId"])
+    stored = complete(store, store.reserve_locker("04")["transactionId"])
     retrieving = store.start_retrieval(stored["retrievalCode"])
     store.complete_retrieval(retrieving["transactionId"])
 
@@ -179,20 +188,20 @@ def test_completing_retrieved_store_is_rejected(store):
 
 
 def test_retrieval_code_collision_is_regenerated(store, monkeypatch):
-    first = store.complete_store(store.reserve_locker("04")["transactionId"])
+    first = complete(store, store.reserve_locker("04")["transactionId"])
     second_reservation = store.reserve_locker("05")
     candidates = iter([first["retrievalCode"], "12345678"])
     monkeypatch.setattr(store, "_new_retrieval_code", lambda: next(candidates))
 
-    second = store.complete_store(second_reservation["transactionId"])
+    second = complete(store, second_reservation["transactionId"])
 
     assert second["retrievalCode"] == "12345678"
     assert second["retrievalCode"] != first["retrievalCode"]
 
 
 def test_retrieval_code_resolves_correct_transaction_and_starts_retrieval(store):
-    first = store.complete_store(store.reserve_locker("04")["transactionId"])
-    second = store.complete_store(store.reserve_locker("05")["transactionId"])
+    first = complete(store, store.reserve_locker("04")["transactionId"])
+    second = complete(store, store.reserve_locker("05")["transactionId"])
 
     result = store.start_retrieval(first["retrievalCode"])
 
@@ -204,7 +213,7 @@ def test_retrieval_code_resolves_correct_transaction_and_starts_retrieval(store)
 
 
 def test_second_retrieval_attempt_fails_while_retrieving(store):
-    stored = store.complete_store(store.reserve_locker("04")["transactionId"])
+    stored = complete(store, store.reserve_locker("04")["transactionId"])
     store.start_retrieval(stored["retrievalCode"])
 
     with pytest.raises(RetrievalUnavailable) as error:
@@ -219,7 +228,7 @@ def test_retrieving_within_lease_remains_retrieving(database_path):
     store = KioskStore(
         database_path, retrieval_seconds=120, clock=lambda: clock_value[0]
     )
-    stored = store.complete_store(store.reserve_locker("04")["transactionId"])
+    stored = complete(store, store.reserve_locker("04")["transactionId"])
     store.start_retrieval(stored["retrievalCode"])
     clock_value[0] = now + datetime.timedelta(seconds=119)
 
@@ -233,7 +242,7 @@ def test_stale_retrieving_recovers_to_stored_and_keeps_locker_occupied(database_
     store = KioskStore(
         database_path, retrieval_seconds=120, clock=lambda: clock_value[0]
     )
-    stored = store.complete_store(store.reserve_locker("04")["transactionId"])
+    stored = complete(store, store.reserve_locker("04")["transactionId"])
     store.start_retrieval(stored["retrievalCode"])
     clock_value[0] = now + datetime.timedelta(seconds=120)
 
@@ -255,7 +264,7 @@ def test_retrieval_can_begin_again_after_stale_lease_recovery(database_path):
     store = KioskStore(
         database_path, retrieval_seconds=120, clock=lambda: clock_value[0]
     )
-    stored = store.complete_store(store.reserve_locker("04")["transactionId"])
+    stored = complete(store, store.reserve_locker("04")["transactionId"])
     first = store.start_retrieval(stored["retrievalCode"])
     clock_value[0] = now + datetime.timedelta(seconds=121)
 
@@ -266,8 +275,8 @@ def test_retrieval_can_begin_again_after_stale_lease_recovery(database_path):
 
 
 def test_retrieval_recovery_returns_only_active_matching_transaction(store):
-    first = store.complete_store(store.reserve_locker("04")["transactionId"])
-    second = store.complete_store(store.reserve_locker("05")["transactionId"])
+    first = complete(store, store.reserve_locker("04")["transactionId"])
+    second = complete(store, store.reserve_locker("05")["transactionId"])
     store.start_retrieval(first["retrievalCode"])
 
     recovered = store.recover_retrieval(first["retrievalCode"])
@@ -283,7 +292,7 @@ def test_retrieval_recovery_returns_only_active_matching_transaction(store):
 
 
 def test_cancelling_retrieval_returns_transaction_to_stored(store):
-    stored = store.complete_store(store.reserve_locker("04")["transactionId"])
+    stored = complete(store, store.reserve_locker("04")["transactionId"])
     retrieving = store.start_retrieval(stored["retrievalCode"])
 
     assert store.cancel_retrieval(retrieving["transactionId"]) is True
@@ -292,7 +301,7 @@ def test_cancelling_retrieval_returns_transaction_to_stored(store):
 
 
 def test_completing_retrieval_releases_correct_locker(store):
-    stored = store.complete_store(store.reserve_locker("04")["transactionId"])
+    stored = complete(store, store.reserve_locker("04")["transactionId"])
     retrieving = store.start_retrieval(stored["retrievalCode"])
 
     result = store.complete_retrieval(retrieving["transactionId"])
@@ -303,7 +312,7 @@ def test_completing_retrieval_releases_correct_locker(store):
 
 
 def test_retrieval_code_cannot_retrieve_completed_transaction(store):
-    stored = store.complete_store(store.reserve_locker("04")["transactionId"])
+    stored = complete(store, store.reserve_locker("04")["transactionId"])
     retrieving = store.start_retrieval(stored["retrievalCode"])
     store.complete_retrieval(retrieving["transactionId"])
 
@@ -313,7 +322,7 @@ def test_retrieval_code_cannot_retrieve_completed_transaction(store):
 
 def test_database_survives_reopening_after_completed_store(database_path):
     first = KioskStore(database_path)
-    stored = first.complete_store(first.reserve_locker("04")["transactionId"])
+    stored = complete(first, first.reserve_locker("04")["transactionId"])
 
     reopened = KioskStore(database_path)
 
@@ -329,7 +338,7 @@ def test_transaction_status_returns_state_appropriate_fields_only(store):
     assert "retrievalCode" not in reserved_status
     assert "mockPaymentId" not in reserved_status
 
-    stored = store.complete_store(reserved["transactionId"])
+    stored = complete(store, reserved["transactionId"])
     stored_status = store.get_transaction_status(stored["transactionId"])
 
     assert stored_status == stored
@@ -392,5 +401,115 @@ def test_schema_contains_no_biometric_or_base64_fields(store, database_path):
                 "PRAGMA table_info(%s)" % table
             ).fetchall())
 
-    forbidden_fragments = ("image", "face", "biometric", "base64", "credential", "password", "api_key")
-    assert not any(fragment in column for column in columns for fragment in forbidden_fragments)
+    # Pointers to durable reference objects are allowed; embeddings / raw images are not.
+    allowed_face_columns = {
+        "reference_frame_id",
+        "reference_face_s3_key",
+        "reference_face_created_at",
+        "reference_face_deleted_at",
+        "rekognition_collection_id",
+        "rekognition_face_id",
+        "face_indexed_at",
+        "face_deleted_at",
+    }
+    forbidden_fragments = (
+        "embedding", "vector", "image", "base64", "biometric",
+        "credential", "password", "api_key",
+    )
+    for column in columns:
+        if column in allowed_face_columns:
+            continue
+        assert not any(fragment in column for fragment in forbidden_fragments), column
+        # Do not store raw face blobs under other names.
+        assert "face_embedding" not in column
+        assert "face_vector" not in column
+
+
+def test_reference_face_columns_migrate_on_existing_database(database_path):
+    """Existing DBs without reference columns gain them without data loss."""
+    database_path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(database_path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE lockers (
+                locker_id TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                active_transaction_id TEXT,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE transactions (
+                transaction_id TEXT PRIMARY KEY,
+                retrieval_code TEXT UNIQUE,
+                locker_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                amount INTEGER,
+                mock_payment_id TEXT UNIQUE,
+                created_at TEXT NOT NULL,
+                reserved_at TEXT,
+                stored_at TEXT,
+                retrieval_started_at TEXT,
+                retrieved_at TEXT,
+                reservation_expires_at TEXT
+            );
+            INSERT INTO lockers VALUES ('04', 'AVAILABLE', NULL, '2026-01-01T00:00:00+00:00');
+            """
+        )
+
+    store = KioskStore(database_path)
+    reservation = store.reserve_locker("04")
+    result = complete(store, reservation["transactionId"], face_id="face-id-migrate")
+    row = store.get_transaction(result["transactionId"])
+    assert row["reference_frame_id"] is None
+    assert row["reference_face_s3_key"] is None
+    assert row["rekognition_face_id"] == "face-id-migrate"
+    assert row["face_indexed_at"]
+    assert result["referencePresent"] is True
+
+
+def test_complete_store_binds_collection_face_id(store):
+    reservation = store.reserve_locker("04")
+    result = store.complete_store(
+        reservation["transactionId"],
+        rekognition_collection_id="kiosk-faces-test",
+        rekognition_face_id="face-id-1",
+    )
+    row = store.get_transaction(reservation["transactionId"])
+    assert result["referencePresent"] is True
+    assert row["rekognition_face_id"] == "face-id-1"
+    assert row["rekognition_collection_id"] == "kiosk-faces-test"
+    assert row["face_indexed_at"]
+    assert row["reference_face_s3_key"] is None
+
+
+def test_complete_store_requires_face_id_and_is_idempotent(store):
+    reservation = store.reserve_locker("04")
+    with pytest.raises(InvalidKioskInput) as error:
+        store.complete_store(reservation["transactionId"])
+    assert error.value.code == "FACE_ID_REQUIRED"
+    first = complete(store, reservation["transactionId"], face_id="face-id-orig")
+    second = complete(store, reservation["transactionId"], face_id="face-id-other")
+    assert second["retrievalCode"] == first["retrievalCode"]
+    txn = store.get_transaction(reservation["transactionId"])
+    assert txn["rekognition_face_id"] == "face-id-orig"
+    assert txn["reference_face_s3_key"] is None
+
+
+def test_get_stored_by_retrieval_code_returns_face_id_for_one_stored(store):
+    first = complete(store, store.reserve_locker("04")["transactionId"], face_id="face-id-a")
+    complete(store, store.reserve_locker("05")["transactionId"], face_id="face-id-b")
+    found = store.get_stored_by_retrieval_code(first["retrievalCode"])
+    assert found["transaction_id"] == first["transactionId"]
+    assert found["locker_id"] == "04"
+    assert found["rekognition_face_id"] == "face-id-a"
+    assert found["reference_face_s3_key"] is None
+    assert store.get_stored_by_retrieval_code("00000000") is None
+
+
+def test_mark_face_deleted_after_retrieval(store):
+    stored = complete(store, store.reserve_locker("04")["transactionId"])
+    retrieving = store.start_retrieval(stored["retrievalCode"])
+    store.complete_retrieval(retrieving["transactionId"])
+    assert store.mark_face_deleted(stored["transactionId"]) is True
+    txn = store.get_transaction(stored["transactionId"])
+    assert txn["face_deleted_at"]
+    assert store.mark_face_deleted(stored["transactionId"]) is False
